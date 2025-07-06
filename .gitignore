@@ -1,0 +1,15 @@
+.idea/
+.DS_Store
+
+.venv/
+.work/
+
+__pycache__/
+/cache/*
+!/cache/README.md
+/inputs/*
+!/inputs/README.md
+
+local/
+dist/
+
