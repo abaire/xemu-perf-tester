@@ -3,6 +3,7 @@
 
 .venv/
 .work/
+results/
 
 __pycache__/
 /cache/*
