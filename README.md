@@ -49,3 +49,18 @@ xemu-perf-run \
   --xemu ~/bin/xemu \
   --iso ~/special_perf_tests.xiso
 ```
+
+#### Using a development build of xemu on macOS
+
+Some extra flags are needed to utilize a development build of xemu. You will
+need to set the `DYLD_FALLBACK_LIBRARY_PATH` environment variable to point at a
+valid xemu.app binary and will need to pass the `--no-bundle` argument to
+`xemu-perf-run` to prevent it from attempting to find a `xemu.app` bundle
+itself.
+
+```shell
+DYLD_FALLBACK_LIBRARY_PATH=/path/to/xemu_repo/dist/xemu.app/Contents/Libraries/arm64 \
+xemu-perf-run \
+  --xemu /path/to/xemu_repo/build/qemu-system-i386 \
+  --no-bundle
+```

@@ -80,7 +80,7 @@ def _determine_output_directory(results_path: str, emulator_command: str) -> str
     stderr: str | None
     try:
         logger.debug("Fetching xemu info '%s'", command)
-        result = subprocess.run(command, capture_output=True, text=True, check=True, timeout=1)
+        result = subprocess.run(command, capture_output=True, text=True, check=True, timeout=1, env=os.environ.copy())
         stderr = result.stderr
     except subprocess.TimeoutExpired as err:
         # Windows Python 3.13 returns a string rather than bytes.
@@ -129,7 +129,12 @@ def _execute_and_collect_output(config: Config) -> EmulatorOutput | None:
     stderr = ""
     try:
         result = subprocess.run(
-            emulator_command, capture_output=True, text=True, timeout=config.timeout_seconds, check=False
+            emulator_command,
+            capture_output=True,
+            text=True,
+            timeout=config.timeout_seconds,
+            check=False,
+            env=os.environ.copy(),
         )
         stderr = result.stderr
     except FileNotFoundError:
