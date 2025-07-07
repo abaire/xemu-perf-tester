@@ -34,10 +34,6 @@ dependencies = [
     "psutil~=7.0.0",
     "py-cpuinfo~=9.0.0",
     "distro~=1.9.0",
-    "altair~=5.5.0",
-    "vl-convert-python>=1.6.0",
-    "Jinja2~=3.1.6",
-    "pandas~=2.3.0",
 ]
 
 [project.urls]
@@ -47,7 +43,6 @@ Source = "https://github.com/abaire/xemu-perf-tester"
 
 [project.scripts]
 xemu-perf-run = "xemu_perf_tester:execute"
-xemu-perf-render = "xemu_perf_tester:render"
 
 [tool.hatch.version]
 path = "src/xemu_perf_tester/__about__.py"

@@ -49,9 +49,3 @@ xemu-perf-run \
   --xemu ~/bin/xemu \
   --iso ~/special_perf_tests.xiso
 ```
-
-## Displaying results
-
-```shell
-xemu-perf-render path/to/render/results
-```
