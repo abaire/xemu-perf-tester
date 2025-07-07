@@ -79,6 +79,7 @@ def _determine_output_directory(results_path: str, emulator_command: str) -> str
     command = Config(emulator_command=emulator_command).build_emulator_command("__this_file_does_not_exist")
     stderr: str | None
     try:
+        logger.debug("Fetching xemu info '%s'", command)
         result = subprocess.run(command, capture_output=True, text=True, check=True, timeout=1)
         stderr = result.stderr
     except subprocess.TimeoutExpired as err:
@@ -218,7 +219,7 @@ def _process_results(
         "iso": os.path.basename(iso_path),
         "suite_allowlist": just_suites,
         "xemu_version": emulator_output.emulator_version,
-        "xemu_machine_info": emulator_output.machine_info,
+        "xemu_machine_info": emulator_output.machine_info + emulator_output.failure_info,
         "machine_info": _fetch_machine_info(),
         "renderer": renderer,
         "results": _parse_results_file(results_file),
