@@ -5,8 +5,13 @@ import logging
 import os
 import platform
 import shutil
-import tomllib
+import sys
 import zipfile
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
 
 from xemu_perf_tester.util.github import download_artifact, fetch_github_release_info
 
@@ -128,7 +133,7 @@ def download_xemu(output_dir: str, tag: str = "latest") -> str | None:
     else:
         with open(tag_info_file_path) as tag_info_file:
             cached_tag = tag_info_file.readline()
-            force_download = cached_tag != release_tag
+        force_download = cached_tag != release_tag
 
     was_downloaded = download_artifact(target_file, download_url, artifact_path_override, force_download=force_download)
 

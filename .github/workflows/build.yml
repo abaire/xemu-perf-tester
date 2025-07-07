@@ -30,7 +30,7 @@ jobs:
       python-version: ${{ steps.select-version.outputs.version }}
     steps:
       - id: select-version
-        run: echo "version=3.11" >> $GITHUB_OUTPUT
+        run: echo "version=3.10" >> $GITHUB_OUTPUT
 
   find-changes:
     runs-on: ubuntu-latest
@@ -66,7 +66,7 @@ jobs:
 
     strategy:
       matrix:
-        python-version: [ "3.11", "3.12" ]
+        python-version: [ "3.10", "3.11", "3.12" ]
 
     steps:
       - uses: actions/checkout@v4
