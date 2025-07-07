@@ -75,8 +75,9 @@ def _download_tester_iso(output_dir: str, tag: str = "latest") -> str | None:
     return target_file
 
 
-def _determine_output_directory(results_path: str, emulator_command: str) -> str | None:
+def _determine_output_directory(results_path: str, emulator_command: str) -> str:
     command = Config(emulator_command=emulator_command).build_emulator_command("__this_file_does_not_exist")
+    stderr: str | None
     try:
         result = subprocess.run(command, capture_output=True, text=True, check=True, timeout=1)
         stderr = result.stderr
@@ -92,6 +93,8 @@ def _determine_output_directory(results_path: str, emulator_command: str) -> str
         logger.exception(err)  # noqa: TRY401 Redundant exception object included in `logging.exception` call
         raise
 
+    if stderr is None:
+        stderr = ""
     emulator_output = EmulatorOutput.parse(stdout=[], stderr=stderr.split("\n"))
 
     return os.path.join(
@@ -122,6 +125,7 @@ def _execute_and_collect_output(config: Config) -> EmulatorOutput | None:
         logger.error("FATAL: Failed to repack with allowlist suites %s", config.suite_allowlist)
         return None
 
+    stderr = ""
     try:
         result = subprocess.run(
             emulator_command, capture_output=True, text=True, timeout=config.timeout_seconds, check=False
@@ -131,10 +135,12 @@ def _execute_and_collect_output(config: Config) -> EmulatorOutput | None:
         logger.exception("Failed to execute emulator")
         return None
     except subprocess.TimeoutExpired as err:
-        # Windows Python 3.13 returns a string rather than bytes.
-        stderr = err.stderr.decode() if isinstance(err.stderr, bytes) else err.stderr
+        if err.stderr is not None:
+            # Windows Python 3.13 returns a string rather than bytes.
+            stderr = err.stderr.decode() if isinstance(err.stderr, bytes) else err.stderr
     except subprocess.CalledProcessError as err:
-        stderr = err.stderr.decode() if isinstance(err.stderr, bytes) else err.stderr
+        if err.stderr is not None:
+            stderr = err.stderr.decode() if isinstance(err.stderr, bytes) else err.stderr
         logger.error(stderr)  # noqa: TRY400 Use `logging.exception` instead of `logging.error`
         logger.exception(err)  # noqa: TRY401 Redundant exception object included in `logging.exception` call
         raise
@@ -144,7 +150,7 @@ def _execute_and_collect_output(config: Config) -> EmulatorOutput | None:
 
 def _parse_results_file(results_file: str) -> dict[str, Any]:
     with open(results_file) as infile:
-        json_lines = []
+        json_lines: list[str] = []
         for line in infile:
             if json_lines or line == "[\n":
                 json_lines.append(line)

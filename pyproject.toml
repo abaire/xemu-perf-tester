@@ -59,13 +59,13 @@ extra-dependencies = [
     "mypy>=1.14.1",
 ]
 [tool.hatch.envs.types.scripts]
-check = "mypy --install-types --non-interactive {args:src/xemu_perf_tester tests}"
+check = "mypy --install-types --non-interactive {args:src/xemu_perf_tester}"
 
 [tool.mypy]
 disable_error_code = ["import-untyped", "import-not-found"]
 
 [tool.coverage.run]
-source_pkgs = ["xemu_perf_tester", "tests"]
+source_pkgs = ["xemu_perf_tester"]
 branch = true
 parallel = true
 omit = [
@@ -74,7 +74,6 @@ omit = [
 
 [tool.coverage.paths]
 xemu-perf-tester = ["src/xemu_perf_tester", "*/nv2a-vsh/src/xemu_perf_tester"]
-tests = ["tests", "*/nv2a-vsh/tests"]
 
 [tool.coverage.report]
 exclude_lines = [

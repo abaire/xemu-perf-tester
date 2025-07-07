@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# ruff: noqa: S101 Use of `assert` detected
 import logging
 import os
 import platform
@@ -122,13 +123,12 @@ def download_xemu(output_dir: str, tag: str = "latest") -> str | None:
 
     tag_info_file_path = os.path.join(output_dir, "xemu-tag.info")
 
-    requested_version = release_info.get("tag_name")
-    if not requested_version or not os.path.isfile(tag_info_file_path):
+    if not release_tag or not os.path.isfile(tag_info_file_path):
         force_download = True
     else:
         with open(tag_info_file_path) as tag_info_file:
             cached_tag = tag_info_file.readline()
-            force_download = cached_tag != requested_version
+            force_download = cached_tag != release_tag
 
     was_downloaded = download_artifact(target_file, download_url, artifact_path_override, force_download=force_download)
 
@@ -136,12 +136,14 @@ def download_xemu(output_dir: str, tag: str = "latest") -> str | None:
         if system == "Linux":
             os.chmod(target_file, 0o700)
         elif system == "Darwin":
+            assert artifact_path_override
             _macos_extract_app(artifact_path_override, target_file)
         elif system == "Windows":
+            assert artifact_path_override
             _windows_extract_app(artifact_path_override, target_file)
 
         with open(tag_info_file_path, "w") as tag_info_file:
-            tag_info_file.write(requested_version)
+            tag_info_file.write(release_tag)
 
     return target_file
 

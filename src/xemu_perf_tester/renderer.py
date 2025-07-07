@@ -12,11 +12,14 @@ import logging
 import os
 import sys
 from collections import defaultdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import altair as alt
 import pandas as pd
 from jinja2 import Environment, FileSystemLoader
+
+if TYPE_CHECKING:
+    from collections.abc import Collection
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +149,7 @@ class IndexedResults:
                 }
             )
 
-        unique_test_names = self.dataframe["test_name"].unique() if not self.dataframe.empty else []
+        unique_test_names: Collection[Any] = self.dataframe["test_name"].unique() if not self.dataframe.empty else []
 
         comparison_schemes = {
             "by_xemu_version": {
@@ -186,8 +189,8 @@ class IndexedResults:
             test_df = self.dataframe[self.dataframe["test_name"] == test_name].copy()  # Work on a copy
 
             for scheme_config in comparison_schemes.values():
-                x_field = scheme_config["x_field"]
-                color_field = scheme_config["color_field"]
+                x_field: str = str(scheme_config["x_field"])
+                color_field: str = str(scheme_config["color_field"])
                 tooltip_extras = scheme_config["tooltip_extras"]
 
                 if not test_df.empty:
@@ -230,7 +233,6 @@ def _expand_gpu_info(result: dict[str, Any]):
     result["gpu_glsl_version"] = None
 
     for line in result["xemu_machine_info"].splitlines():
-        line: str
         key, value = line.split(": ", maxsplit=1)
         if key == "GL_VENDOR":
             result["gpu_vendor"] = value

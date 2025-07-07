@@ -47,7 +47,6 @@ jobs:
           python:
             - '.github/workflows/*.yml'
             - 'src/**'
-            - 'tests/**'
             - 'pyproject.toml'
             - 'README.md'
             - 'LICENSE.txt'
