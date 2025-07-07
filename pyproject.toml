@@ -27,7 +27,7 @@ classifiers = [
 ]
 dependencies = [
     "nxdk-pgraph-test-runner>=0.1.13",
-    "python-xiso-repacker>=0.1.0",
+    "python-xiso-repacker>=0.1.1",
     "requests~=2.32.3",
     "GitPython~=3.1.44",
     "pyfatx~=0.0.7",
