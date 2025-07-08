@@ -384,7 +384,19 @@ def entrypoint():
         logger.error("Invalid ISO path '%s'", iso)
         return 1
 
-    xemu = os.path.abspath(os.path.expanduser(args.xemu)) if args.xemu else download_xemu(cache_path, args.xemu_tag)
+    if args.xemu:
+        xemu = os.path.abspath(os.path.expanduser(args.xemu))
+        dev_dir = os.path.join(cache_path, "dev_xemu")
+        os.makedirs(dev_dir, exist_ok=True)
+        xemu_copy = os.path.join(dev_dir, os.path.basename(xemu))
+        if os.path.isdir(xemu):
+            shutil.copytree(xemu, xemu_copy, dirs_exist_ok=True)
+        else:
+            shutil.copy2(xemu, xemu_copy)
+        xemu = xemu_copy
+    else:
+        xemu = download_xemu(cache_path, args.xemu_tag)
+
     if not xemu:
         logger.error("Failed to download xemu")
         return 1
