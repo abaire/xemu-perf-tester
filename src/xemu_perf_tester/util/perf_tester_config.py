@@ -34,6 +34,7 @@ class XemuPerfTesterConfigManager:
     def repack_iso_fresh(
         self,
         output_path: str,
+        tests_to_disable: list[str] | None = None,
     ) -> bool:
         """Repacks the xemu_perf_tests iso with FTP enabled."""
         tester_config = self.extract_pgraph_tester_config()
@@ -59,6 +60,10 @@ class XemuPerfTesterConfigManager:
         )
 
         tester_config.pop("test_suites", None)
+        if tests_to_disable:
+            skip_config = create_skip_config(tests_to_disable)
+            logger.debug("Repacking with additional skipped tests %s", skip_config)
+            mergedeep.merge(tester_config, skip_config)
 
         return self._repack_config(tester_config, output_path)
 
@@ -156,11 +161,17 @@ def create_skip_config(names_to_disable: Collection[str]) -> dict[str, Any]:
     skip_config = {"skipped": True}
 
     for fq_name in names_to_disable:
-        suite, name = fq_name.split("::")
+        elements = fq_name.split("::")
+        if len(elements) > 1 and elements[1]:
+            suite, test = elements
 
-        if suite not in ret:
-            ret[suite] = {}
-        ret[suite][name] = skip_config
+            if suite not in ret:
+                ret[suite] = {}
+            ret[suite][test] = skip_config
+        else:
+            suite = elements[0]
+            if suite not in ret:
+                ret[suite] = skip_config
 
     return {"test_suites": ret}
 

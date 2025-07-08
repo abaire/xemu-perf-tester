@@ -4,9 +4,12 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import re
 import shutil
 import sys
 import zipfile
+
+import semver
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -16,6 +19,49 @@ else:
 from xemu_perf_tester.util.github import download_artifact, fetch_github_release_info
 
 logger = logging.getLogger(__name__)
+
+_XEMU_VERSION_CAPTURE = r"(\d+)\.(\d+)\.(\d+)"
+# xemu-0.8.92-master-<githash>
+# xemu-0.8.53-master-5685a6290cfbf7b022ec5e58a8ffb09f664c04e8
+_XEMU_RELEASE_VERSION_RE = re.compile(r"xemu-" + _XEMU_VERSION_CAPTURE + r"-master-.*")
+# xemu-0.8.92-<build>-g<shorthash>-<branch_name>-<githash>
+# xemu-0.8.53-4-g90cfbf-fix_something-90cfbf022ec5e58a8ffb09f664
+_XEMU_DEV_VERSION_RE = re.compile(r"xemu-" + _XEMU_VERSION_CAPTURE + r"-(\d+)-g[^-]+-([^-]+)-.*")
+
+
+class XemuVersion:
+    """xemu version string parser"""
+
+    def __init__(self, version_str: str):
+        self.raw = version_str
+
+        match = _XEMU_RELEASE_VERSION_RE.match(version_str)
+        if match:
+            self.xemu_major = int(match.group(1))
+            self.xemu_minor = int(match.group(2))
+            self.xemu_patch = int(match.group(3))
+            self.build = None
+            self.branch = None
+        else:
+            match = _XEMU_DEV_VERSION_RE.match(version_str)
+            if match:
+                self.xemu_major = int(match.group(1))
+                self.xemu_minor = int(match.group(2))
+                self.xemu_patch = int(match.group(3))
+                self.build = int(match.group(4))
+                self.branch = match.group(5).strip()
+            else:
+                msg = f"Invalid xemu version string '{version_str}'"
+                raise ValueError(msg)
+
+        self.semver = semver.Version(self.xemu_major, self.xemu_minor, self.xemu_patch, build=self.build)
+
+    @property
+    def is_release(self) -> bool:
+        return self.build is None
+
+    def compare(self, other: XemuVersion) -> int:
+        return self.semver.compare(other.semver)
 
 
 def _macos_extract_app(archive_file: str, target_app_bundle: str) -> None:
