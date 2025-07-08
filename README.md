@@ -64,3 +64,42 @@ xemu-perf-run \
   --xemu /path/to/xemu_repo/build/qemu-system-i386 \
   --no-bundle
 ```
+
+## Test configuration
+
+### Conditional block listing
+
+Tests that cannot be executed on certain versions of xemu may be disallowed
+using a `blocklist.json` file specified using the `--block-list-file` command.
+
+The file provides a simple list of JSON objects, each specifying a set of one or
+more conditions and one or more test names to be disabled if the
+condition is satisfied.
+
+For example, to disable the entire "High vertex count" suite on xemu versions
+less than 0.8.54:
+
+```json
+{
+  "rules": [
+    {
+      "conditions": [
+        "$version < 0.8.54"
+      ],
+      "skipped": [
+        "High vertex count::"
+      ]
+    }
+  ]
+}
+```
+
+"`conditions`" may use the `$version` variable to test against the runtime
+reported version of xemu.
+
+"`skipped`" entries are fully qualified test names, with anything before "::"
+referring to a test suite and everything after to a specific test. These are
+exact matches, so "Suite::Test" will only disable the test literally named "
+Suite::Test" but would still allow "Suite::Test1" to run. The trailing "::" may
+be omitted when disallowing an entire test suite. For example "Suite::" is
+equivalent to "Suite", both will disable all tests in the "Suite" suite.

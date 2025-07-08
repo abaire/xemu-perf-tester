@@ -25,6 +25,7 @@ from nxdk_pgraph_test_runner import Config
 from nxdk_pgraph_test_runner.emulator_output import EmulatorOutput
 from python_xiso_repacker import ensure_extract_xiso, extract_file
 
+from xemu_perf_tester.util.blocklist import BlockList
 from xemu_perf_tester.util.github import download_artifact, fetch_github_release_info
 from xemu_perf_tester.util.hdd import retrieve_files, setup_xemu_hdd_image
 from xemu_perf_tester.util.perf_tester_config import XemuPerfTesterConfigManager
@@ -75,7 +76,8 @@ def _download_tester_iso(output_dir: str, tag: str = "latest") -> str | None:
     return target_file
 
 
-def _determine_output_directory(results_path: str, emulator_command: str) -> str:
+def _determine_xemu_info(results_path: str, emulator_command: str) -> tuple[str, str]:
+    """Returns the output directory and xemu version."""
     command = Config(emulator_command=emulator_command).build_emulator_command("__this_file_does_not_exist")
     stderr: str | None
     try:
@@ -101,20 +103,20 @@ def _determine_output_directory(results_path: str, emulator_command: str) -> str
     return os.path.join(
         results_path,
         emulator_output.emulator_version,
-    )
+    ), emulator_output.emulator_version
 
 
-def _configure_iso(config: Config) -> str | None:
+def _configure_iso(config: Config, block_list: BlockList) -> str | None:
     manager = XemuPerfTesterConfigManager(config)
     iso_path = os.path.join(config.ensure_data_dir(), _MODIFIED_TESTER_ISO)
-    if not manager.repack_iso_fresh(iso_path):
+    if not manager.repack_iso_fresh(iso_path, tests_to_disable=block_list.disallowed_tests):
         return None
 
     return iso_path
 
 
-def _execute_and_collect_output(config: Config) -> EmulatorOutput | None:
-    repacked_iso = _configure_iso(config)
+def _execute_and_collect_output(config: Config, block_list: BlockList) -> EmulatorOutput | None:
+    repacked_iso = _configure_iso(config, block_list)
     if not repacked_iso:
         logger.error("FATAL: Failed to repack tester ISO")
         return 1
@@ -243,6 +245,7 @@ def run(
     hdd_path: str,
     machine_token: str,
     just_suites: Collection[str] | None = None,
+    block_list_file: str | None = None,
     *,
     no_bundle: bool = False,
     use_vulkan: bool = False,
@@ -260,7 +263,7 @@ def run(
         use_vulkan=use_vulkan,
     )
 
-    output_directory = _determine_output_directory(results_path, emulator_command=emulator_command)
+    output_directory, xemu_version = _determine_xemu_info(results_path, emulator_command=emulator_command)
 
     config = Config(
         work_dir=work_path,
@@ -271,7 +274,8 @@ def run(
         suite_allowlist=just_suites,
     )
 
-    emulator_output = _execute_and_collect_output(config)
+    block_list = BlockList(xemu_version, block_list_file=block_list_file)
+    emulator_output = _execute_and_collect_output(config, block_list)
     if not emulator_output:
         return 201
 
@@ -370,6 +374,11 @@ def entrypoint():
     )
     parser.add_argument("--use-vulkan", action="store_true", help="Use the Vulkan renderer instead of OpenGL.")
     parser.add_argument("--just-suites", nargs="+", help="Just run the given suites rather than the full test set.")
+    parser.add_argument(
+        "--block-list-file",
+        metavar="block_list_json_file",
+        help="Specify a block_list.json file used to restrict the set of tests based on host machine information.",
+    )
 
     args = parser.parse_args()
 
@@ -412,6 +421,8 @@ def entrypoint():
 
     machine_token = machineid.hashed_id("xemu-perf-tester")
 
+    block_list_file = os.path.abspath(os.path.expanduser(args.block_list_file)) if args.block_list_file else None
+
     def _copy_inputs_and_run(temp_path: str) -> int:
         inputs_path = os.path.join(temp_path, "inputs")
         os.makedirs(inputs_path, exist_ok=True)
@@ -430,6 +441,7 @@ def entrypoint():
             no_bundle=args.no_bundle,
             use_vulkan=args.use_vulkan,
             just_suites=args.just_suites,
+            block_list_file=block_list_file,
         )
 
     if args.temp_path:
