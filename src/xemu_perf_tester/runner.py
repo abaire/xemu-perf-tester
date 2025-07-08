@@ -226,7 +226,7 @@ def _process_results(
         "iso": os.path.basename(iso_path),
         "suite_allowlist": just_suites,
         "xemu_version": emulator_output.emulator_version,
-        "xemu_machine_info": emulator_output.machine_info + emulator_output.failure_info,
+        "xemu_machine_info": emulator_output.machine_info + "\n" + emulator_output.failure_info,
         "machine_info": _fetch_machine_info(),
         "renderer": renderer,
         "results": _parse_results_file(results_file),
