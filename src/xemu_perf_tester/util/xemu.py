@@ -7,7 +7,9 @@ import platform
 import re
 import shutil
 import sys
+import tarfile
 import zipfile
+from typing import Any
 
 import semver
 
@@ -16,7 +18,7 @@ if sys.version_info >= (3, 11):
 else:
     import tomli as tomllib
 
-from xemu_perf_tester.util.github import download_artifact, fetch_github_release_info
+from xemu_perf_tester.util.github import download_artifact, fetch_github_ci_artifact_info, fetch_github_release_info
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,8 @@ _XEMU_RELEASE_VERSION_RE = re.compile(r"xemu-" + _XEMU_VERSION_CAPTURE + r"-mast
 # xemu-0.8.92-<build>-g<shorthash>-<branch_name>-<githash>
 # xemu-0.8.53-4-g90cfbf-fix_something-90cfbf022ec5e58a8ffb09f664
 _XEMU_DEV_VERSION_RE = re.compile(r"xemu-" + _XEMU_VERSION_CAPTURE + r"-(\d+)-g[^-]+-([^-]+)-.*")
+
+_XEMU_API_URL = "https://api.github.com/repos/xemu-project/xemu"
 
 
 class XemuVersion:
@@ -64,21 +68,77 @@ class XemuVersion:
         return self.semver.compare(other.semver)
 
 
+def _ubuntu_extract_app(archive_file: str, target_binary: str) -> None:
+    output_directory = os.path.dirname(target_binary)
+    os.makedirs(output_directory, exist_ok=True)
+
+    try:
+        nested_archive = ""
+        with zipfile.ZipFile(archive_file, "r") as zip_ref:
+            for file_info in zip_ref.infolist():
+                if (
+                    file_info.filename.startswith("xemu")
+                    and not file_info.is_dir()
+                    and file_info.filename.endswith(".tgz")
+                ):
+                    nested_archive = os.path.join(output_directory, file_info.filename)
+                    zip_ref.extract(file_info, output_directory)
+                    break
+
+        if not nested_archive:
+            msg = f"xemu archive was downloaded at '{archive_file}' but artifact tgz could not be extracted"
+            raise ValueError(msg)
+
+        with tarfile.open(nested_archive, "r:gz") as tar:
+            for tar_info in tar.getmembers():
+                if tar_info.name.endswith(".AppImage"):
+                    file_obj = tar.extractfile(tar_info)
+                    assert file_obj
+
+                    with open(target_binary, "wb") as outfile:
+                        outfile.write(file_obj.read())
+                    os.chmod(target_binary, 0o700)
+                    break
+
+    except FileNotFoundError:
+        logger.exception("Archive not found when extracting xemu app bundle")
+        raise
+    except zipfile.BadZipFile:
+        logger.exception("Invalid zip archive when extracting xemu app bundle")
+        raise
+
+
+_MACOS_CI_ARTIFACT_NESTED_ZIP_NAME = "xemu-macos-universal-release.zip"
+
+
 def _macos_extract_app(archive_file: str, target_app_bundle: str) -> None:
     """Extracts the xemu.app bundle from the given archive and renames it."""
     app_bundle_directory = os.path.dirname(target_app_bundle)
 
     try:
-        with zipfile.ZipFile(archive_file, "r") as zip_ref:
-            os.makedirs(app_bundle_directory, exist_ok=True)
+        nested_archive_file = []
 
-            for file_info in zip_ref.infolist():
-                if file_info.filename.startswith("xemu.app/") and not file_info.is_dir():
-                    zip_ref.extract(file_info, app_bundle_directory)
+        def extract_app_bundle(zip_filename):
+            with zipfile.ZipFile(zip_filename, "r") as zip_ref:
+                os.makedirs(app_bundle_directory, exist_ok=True)
 
-            if not os.path.isfile(os.path.join(app_bundle_directory, "xemu.app", "Contents", "MacOS", "xemu")):
-                msg = f"xemu archive was downloaded at '{archive_file}' but app bundle could not be extracted"
-                raise ValueError(msg)
+                for file_info in zip_ref.infolist():
+                    if file_info.filename.startswith("xemu.app/") and not file_info.is_dir():
+                        zip_ref.extract(file_info, app_bundle_directory)
+                    elif file_info.filename == _MACOS_CI_ARTIFACT_NESTED_ZIP_NAME:
+                        zip_ref.extract(file_info, app_bundle_directory)
+                        nested_archive_file.append(
+                            os.path.join(app_bundle_directory, _MACOS_CI_ARTIFACT_NESTED_ZIP_NAME)
+                        )
+                        break
+
+        extract_app_bundle(archive_file)
+        if nested_archive_file:
+            extract_app_bundle(nested_archive_file[0])
+
+        if not os.path.isfile(os.path.join(app_bundle_directory, "xemu.app", "Contents", "MacOS", "xemu")):
+            msg = f"xemu archive was downloaded at '{archive_file}' but app bundle could not be extracted"
+            raise ValueError(msg)
 
     except FileNotFoundError:
         logger.exception("Archive not found when extracting xemu app bundle")
@@ -109,9 +169,9 @@ def _windows_extract_app(archive_file: str, target_executable: str) -> None:
         raise
 
 
-def download_xemu(output_dir: str, tag: str = "latest") -> str | None:
+def _download_xemu_release(output_dir: str, tag: str = "latest") -> str | None:
     logger.info("Fetching info on xemu at release tag %s...", tag)
-    release_info = fetch_github_release_info("https://api.github.com/repos/xemu-project/xemu", tag)
+    release_info = fetch_github_release_info(_XEMU_API_URL, tag)
     if not release_info:
         return None
 
@@ -197,6 +257,116 @@ def download_xemu(output_dir: str, tag: str = "latest") -> str | None:
             tag_info_file.write(release_tag)
 
     return target_file
+
+
+def _download_xemu_ci_build(
+    output_dir: str, artifacts_info: dict[str, Any], info_url: str, auth_header: dict[str, Any]
+) -> str | None:
+    system = platform.system()
+    if system == "Linux":
+        # xemu-ubuntu-x86_64-release
+        # xemu-ubuntu-aarch64-release
+        def check_asset(asset_name: str) -> bool:
+            if not asset_name.startswith("xemu-ubuntu-") or not asset_name.endswith("release"):
+                return False
+            platform_name = platform.machine()
+            if platform_name == "AMD64":
+                platform_name = "x86_64"
+            return platform_name.lower() in asset_name
+    elif system == "Darwin":
+        # xemu-macos-universal-release
+        def check_asset(asset_name: str) -> bool:
+            return asset_name == "xemu-macos-universal-release"
+    elif system == "Windows":
+        # xemu-win-aarch64-release
+        # xemu-win-x86_64-release
+        def check_asset(asset_name: str) -> bool:
+            if not asset_name.startswith("xemu-win-") or not asset_name.endswith("release"):
+                return False
+            platform_name = platform.machine()
+            if platform_name == "AMD64":
+                platform_name = "x86_64"
+            return platform_name.lower() in asset_name
+    else:
+        msg = f"System '{system} not supported"
+        raise NotImplementedError(msg)
+
+    asset_name = ""
+    download_url = ""
+    digest = ""
+    for asset in artifacts_info.get("artifacts", []):
+        asset_name = asset.get("name", "")
+        if not check_asset(asset_name):
+            continue
+        download_url = asset.get("archive_download_url", "")
+        digest = asset["digest"]
+        break
+
+    if not download_url:
+        logger.error("Failed to fetch download URL for '%s'", info_url)
+        return None
+
+    if system == "Linux":
+        target_file = os.path.join(output_dir, asset_name)
+        artifact_path_override = f"{target_file}.zip"
+    elif system == "Darwin":
+        target_file = os.path.join(output_dir, f"xemu-macos-{digest}", "xemu.app")
+        artifact_path_override = f"{target_file}.zip"
+    elif system == "Windows":
+        target_file = os.path.join(output_dir, "xemu.exe")
+        artifact_path_override = f"{target_file}.zip"
+    else:
+        msg = f"System '{system} not supported"
+        raise NotImplementedError(msg)
+
+    logger.debug("Xemu %s %s", target_file, download_url)
+
+    tag_info_file_path = os.path.join(output_dir, "xemu-tag.info")
+
+    if not os.path.isfile(tag_info_file_path):
+        force_download = True
+    else:
+        with open(tag_info_file_path) as tag_info_file:
+            cached_tag = tag_info_file.readline()
+        force_download = cached_tag != digest
+
+    was_downloaded = download_artifact(
+        target_file, download_url, artifact_path_override, additional_headers=auth_header, force_download=force_download
+    )
+
+    if was_downloaded:
+        if system == "Linux":
+            assert artifact_path_override
+            _ubuntu_extract_app(artifact_path_override, target_file)
+        elif system == "Darwin":
+            assert artifact_path_override
+            _macos_extract_app(artifact_path_override, target_file)
+        elif system == "Windows":
+            assert artifact_path_override
+            _windows_extract_app(artifact_path_override, target_file)
+
+        with open(tag_info_file_path, "w") as tag_info_file:
+            tag_info_file.write(digest)
+
+    return target_file
+
+
+def download_xemu(output_dir: str, tag_or_url: str = "latest", github_api_token: str | None = None) -> str | None:
+    auth_header = {"Authorization": f"token {github_api_token}"} if github_api_token else None
+    artifacts_info = fetch_github_ci_artifact_info(tag_or_url, additional_headers=auth_header)
+
+    if not artifacts_info:
+        return _download_xemu_release(output_dir, tag_or_url)
+
+    if not auth_header:
+        logger.error(
+            "PR and Action artifacts require an API token to fetch.\n"
+            "You may generate a default 'Fine-grained' Personal access token via the GitHub developer settings page\n"
+            "If you do not wish to provide one, please download the artifact manually."
+        )
+        return None
+
+    return _download_xemu_ci_build(output_dir, artifacts_info, tag_or_url, auth_header)
 
 
 def generate_xemu_toml(

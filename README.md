@@ -38,6 +38,17 @@ xemu-perf-run \
   --test-tag v12345
 ```
 
+`--xemu_tag` accepts:
+
+- a xemu release version (e.g., `v0.8.92`)
+- the URL of a build action (e.g.,
+  `https://github.com/xemu-project/xemu/actions/runs/16152580613`)
+- the URL of a pull request (PR) (e.g.,
+  `https://github.com/xemu-project/xemu/pull/2329`).
+
+The action and PR options additionally require you to pass a GitHub token using
+the `--github-token` argument. See `--help` for details.
+
 ### Reusing existing xemu-perf-tests ISO and/or xemu binary
 
 You can use the `--iso` and `--xemu` flags to specify existing artifacts. This
