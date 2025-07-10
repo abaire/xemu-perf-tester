@@ -30,6 +30,8 @@ _XEMU_RELEASE_VERSION_RE = re.compile(r"xemu-" + _XEMU_VERSION_CAPTURE + r"-mast
 # xemu-0.8.53-4-g90cfbf-fix_something-90cfbf022ec5e58a8ffb09f664
 _XEMU_DEV_VERSION_RE = re.compile(r"xemu-" + _XEMU_VERSION_CAPTURE + r"-(\d+)-g[^-]+-([^-]+)-.*")
 
+_XEMU_FORK_PR_RE = re.compile(r"xemu-" + _XEMU_VERSION_CAPTURE + r"-\s+-.*")
+
 _XEMU_API_URL = "https://api.github.com/repos/xemu-project/xemu"
 
 
@@ -55,8 +57,16 @@ class XemuVersion:
                 self.build = int(match.group(4))
                 self.branch = match.group(5).strip()
             else:
-                msg = f"Invalid xemu version string '{version_str}'"
-                raise ValueError(msg)
+                match = _XEMU_FORK_PR_RE.match(version_str)
+                if match:
+                    self.xemu_major = int(match.group(1))
+                    self.xemu_minor = int(match.group(2))
+                    self.xemu_patch = int(match.group(3))
+                    self.build = 0
+                    self.branch = "Unofficial"
+                else:
+                    msg = f"Invalid xemu version string '{version_str}'"
+                    raise ValueError(msg)
 
         self.semver = semver.Version(self.xemu_major, self.xemu_minor, self.xemu_patch, build=self.build)
 
