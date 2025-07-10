@@ -47,10 +47,13 @@ logger = logging.getLogger(__name__)
 _MODIFIED_TESTER_ISO = "updated_tester_iso.iso"
 
 
-def _download_tester_iso(output_dir: str, tag: str = "latest") -> str | None:
+def _download_tester_iso(output_dir: str, tag: str = "latest", github_api_token: str | None = None) -> str | None:
     logger.info("Fetching info on xemu-perf-tests ISO at release tag %s...", tag)
 
-    release_info = fetch_github_release_info("https://api.github.com/repos/abaire/xemu-perf-tests", tag)
+    auth_header = {"Authorization": f"token {github_api_token}"} if github_api_token else None
+    release_info = fetch_github_release_info(
+        "https://api.github.com/repos/abaire/xemu-perf-tests", tag, additional_headers=auth_header
+    )
     if not release_info:
         return None
 
@@ -380,6 +383,8 @@ def entrypoint():
         help="Specify a block_list.json file used to restrict the set of tests based on host machine information.",
     )
 
+    parser.add_argument("--github-token", help="Github API token, only required for PR/action artifact fetching.")
+
     args = parser.parse_args()
 
     log_level = logging.DEBUG if args.verbose else logging.INFO
@@ -388,7 +393,20 @@ def entrypoint():
     cache_path = ensure_cache_path(args.cache_path)
     results_path = ensure_results_path(args.results_path)
 
-    iso = os.path.abspath(os.path.expanduser(args.iso)) if args.iso else _download_tester_iso(cache_path, args.test_tag)
+    mcpx_path = os.path.abspath(os.path.expanduser(args.mcpx))
+    if not os.path.isfile(mcpx_path):
+        logger.error("Missing required mcpx.bin file")
+        return 1
+    bios_path = os.path.abspath(os.path.expanduser(args.bios))
+    if not os.path.isfile(bios_path):
+        logger.error("Missing required bios.bin file")
+        return 1
+
+    iso = (
+        os.path.abspath(os.path.expanduser(args.iso))
+        if args.iso
+        else _download_tester_iso(cache_path, args.test_tag, args.github_token)
+    )
     if not iso or not os.path.isfile(iso):
         logger.error("Invalid ISO path '%s'", iso)
         return 1
@@ -404,7 +422,7 @@ def entrypoint():
             shutil.copy2(xemu, xemu_copy)
         xemu = xemu_copy
     else:
-        xemu = download_xemu(cache_path, args.xemu_tag)
+        xemu = download_xemu(cache_path, args.xemu_tag, args.github_token)
 
     if not xemu:
         logger.error("Failed to download xemu")
@@ -427,9 +445,9 @@ def entrypoint():
         inputs_path = os.path.join(temp_path, "inputs")
         os.makedirs(inputs_path, exist_ok=True)
         with contextlib.suppress(SameFileError):
-            shutil.copy(args.mcpx, os.path.join(inputs_path, "mcpx.bin"))
+            shutil.copy(mcpx_path, os.path.join(inputs_path, "mcpx.bin"))
         with contextlib.suppress(SameFileError):
-            shutil.copy(args.bios, os.path.join(inputs_path, "bios.bin"))
+            shutil.copy(bios_path, os.path.join(inputs_path, "bios.bin"))
         return run(
             iso_path=iso,
             work_path=temp_path,
