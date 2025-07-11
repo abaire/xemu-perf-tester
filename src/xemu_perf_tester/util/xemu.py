@@ -206,6 +206,11 @@ def _download_xemu_release(output_dir: str, tag: str = "latest") -> str | None:
         def check_asset(asset_name: str) -> bool:
             if not asset_name.startswith("xemu-win-") or not asset_name.endswith("release.zip"):
                 return False
+
+            # xemu-win-release.zip for very old versions
+            if asset_name == "xemu-win-release.zip":
+                return True
+
             platform_name = platform.machine()
             if platform_name == "AMD64":
                 platform_name = "x86_64"
@@ -224,7 +229,7 @@ def _download_xemu_release(output_dir: str, tag: str = "latest") -> str | None:
         break
 
     if not download_url:
-        logger.error("Failed to fetch download URL for latest nxdk_pgraph_tests release")
+        logger.error("Failed to fetch download URL for latest xemu release")
         return None
 
     if system == "Linux":
