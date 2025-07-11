@@ -217,6 +217,7 @@ def _process_results(
     just_suites: Collection[str] | None,
     results_file: str,
     emulator_output: EmulatorOutput,
+    xemu_tag: str | None,
     *,
     use_vulkan: bool,
 ):
@@ -235,6 +236,9 @@ def _process_results(
         "results": _parse_results_file(results_file),
     }
 
+    if xemu_tag:
+        results["xemu_tag"] = xemu_tag
+
     with open(output_file, "w") as outfile:
         json.dump(results, outfile, indent=2)
 
@@ -249,6 +253,7 @@ def run(
     machine_token: str,
     just_suites: Collection[str] | None = None,
     block_list_file: str | None = None,
+    xemu_tag: str | None = None,
     *,
     no_bundle: bool = False,
     use_vulkan: bool = False,
@@ -293,6 +298,7 @@ def run(
             os.path.join(temp_path, "xemu-perf-tests", "results.txt"),
             emulator_output,
             use_vulkan=use_vulkan,
+            xemu_tag=xemu_tag,
         )
 
     return 0
@@ -460,6 +466,7 @@ def entrypoint():
             use_vulkan=args.use_vulkan,
             just_suites=args.just_suites,
             block_list_file=block_list_file,
+            xemu_tag=args.xemu_tag,
         )
 
     if args.temp_path:
