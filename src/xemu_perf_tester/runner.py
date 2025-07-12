@@ -74,7 +74,7 @@ def _download_tester_iso(output_dir: str, tag: str = "latest", github_api_token:
         return None
 
     target_file = os.path.join(output_dir, f"xemu-perf-tests-{release_tag}.iso")
-    download_artifact(target_file, download_url)
+    download_artifact(target_file, download_url, additional_headers=auth_header)
 
     return target_file
 
