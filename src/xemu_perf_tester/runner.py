@@ -399,6 +399,9 @@ def entrypoint():
     cache_path = ensure_cache_path(args.cache_path)
     results_path = ensure_results_path(args.results_path)
 
+    if args.import_install:
+        _copy_files_from_xemu_toml(args)
+
     mcpx_path = os.path.abspath(os.path.expanduser(args.mcpx))
     if not os.path.isfile(mcpx_path):
         logger.error("Missing required mcpx.bin file")
@@ -436,9 +439,6 @@ def entrypoint():
     if not os.path.exists(xemu):
         logger.error("Invalid xemu path '%s'", xemu)
         return 1
-
-    if args.import_install:
-        _copy_files_from_xemu_toml(args)
 
     hdd = os.path.join(cache_path, "hdd.img")
     _setup_minimal_hdd(hdd, iso)
