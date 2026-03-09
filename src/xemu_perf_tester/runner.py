@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# ruff: noqa: T201 `print` found
+# ruff: noqa: PLC0415 `import` should be at the top-level of a file
 
 from __future__ import annotations
 
