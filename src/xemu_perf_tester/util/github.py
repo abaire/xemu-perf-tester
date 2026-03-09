@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# ruff: noqa: TRY300 Consider moving this statement to an `else` block
+# ruff: noqa: FURB122 [*] Use of `f.write` in a for loop
 import logging
 import os
 import re

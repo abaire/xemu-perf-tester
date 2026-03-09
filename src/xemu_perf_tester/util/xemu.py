@@ -22,13 +22,15 @@ from xemu_perf_tester.util.github import download_artifact, fetch_github_ci_arti
 
 logger = logging.getLogger(__name__)
 
+_GITHASHSTRING = r"[a-f0-9]+"
 _XEMU_VERSION_CAPTURE = r"(\d+)\.(\d+)\.(\d+)"
 # xemu-0.8.92-master-<githash>
 # xemu-0.8.53-master-5685a6290cfbf7b022ec5e58a8ffb09f664c04e8
-_XEMU_RELEASE_VERSION_RE = re.compile(r"xemu-" + _XEMU_VERSION_CAPTURE + r"-master-.*")
+# xemu-0.8.134-fc9980d2962cbec656253106ea2e121fab1e68d4
+_XEMU_RELEASE_VERSION_RE = re.compile(r"xemu-" + _XEMU_VERSION_CAPTURE + r"(?:-master)?-" + _GITHASHSTRING + "$")
 # xemu-0.8.92-<build>-g<shorthash>-<branch_name>-<githash>
 # xemu-0.8.53-4-g90cfbf-fix_something-90cfbf022ec5e58a8ffb09f664
-_XEMU_DEV_VERSION_RE = re.compile(r"xemu-" + _XEMU_VERSION_CAPTURE + r"-(\d+)-g[^-]+-([^-]+)-.*")
+_XEMU_DEV_VERSION_RE = re.compile(r"xemu-" + _XEMU_VERSION_CAPTURE + r"-(\d+)-g[^-]+-([^-]+)-" + _GITHASHSTRING + "$")
 
 _XEMU_FORK_PR_RE = re.compile(r"xemu-" + _XEMU_VERSION_CAPTURE + r"-\s+-.*")
 
