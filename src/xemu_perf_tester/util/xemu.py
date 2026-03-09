@@ -202,7 +202,9 @@ def _download_xemu_release(output_dir: str, tag: str = "latest") -> str | None:
     elif system == "Darwin":
         # xemu-macos-universal-release.zip
         def check_asset(asset_name: str) -> bool:
-            return asset_name.startswith("xemu-macos-universal") and asset_name.endswith(".zip")
+            if not asset_name.startswith("xemu-") or "-dbg-" in asset_name:
+                return False
+            return "macos-universal" in asset_name and asset_name.endswith(".zip")
     elif system == "Windows":
         # xemu-win-x86_64-release.zip
         def check_asset(asset_name: str) -> bool:
