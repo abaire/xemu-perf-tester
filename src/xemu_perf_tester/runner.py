@@ -4,6 +4,9 @@
 # ruff: noqa: T201 `print` found
 # ruff: noqa: S105 Possible hardcoded password
 # ruff: noqa: PLR2004 Magic value used in comparison
+# ruff: noqa: BLE001 Do not catch blind exception
+# ruff: noqa: RUF012 Mutable class attributes should be annotated with `typing.ClassVar`
+# ruff: noqa: S607 Starting a process with a partial executable path
 
 from __future__ import annotations
 
@@ -185,6 +188,85 @@ def _parse_results_file(results_file: str) -> dict[str, Any]:
     return json.loads("".join(json_lines))
 
 
+def _get_display_refresh_rate() -> float | None:
+    """Attempts to return the primary display refresh rate in Hz.
+
+    Uses only stdlib ctypes on macOS and Windows. Falls back to parsing
+    ``xrandr`` output on Linux (X11 only; returns None on Wayland).
+    Returns None if the rate cannot be determined.
+    """
+    system = platform.system()
+
+    if system == "Darwin":
+        try:
+            import ctypes
+            import ctypes.util
+
+            cg_lib = ctypes.util.find_library("CoreGraphics")
+            if cg_lib is None:
+                return None
+            cg = ctypes.cdll.LoadLibrary(cg_lib)
+            cg.CGMainDisplayID.restype = ctypes.c_uint32
+            cg.CGDisplayCopyDisplayMode.restype = ctypes.c_void_p
+            cg.CGDisplayCopyDisplayMode.argtypes = [ctypes.c_uint32]
+            cg.CGDisplayModeGetRefreshRate.restype = ctypes.c_double
+            cg.CGDisplayModeGetRefreshRate.argtypes = [ctypes.c_void_p]
+            cg.CGDisplayModeRelease.argtypes = [ctypes.c_void_p]
+
+            display_id = cg.CGMainDisplayID()
+            mode = cg.CGDisplayCopyDisplayMode(display_id)
+            if mode:
+                rate = cg.CGDisplayModeGetRefreshRate(mode)
+                cg.CGDisplayModeRelease(mode)
+                if rate > 0:
+                    return rate
+        except Exception:
+            logger.debug("(non-fatal): Failed to get display refresh rate on macOS", exc_info=True)
+
+    elif system == "Windows":
+        try:
+            import ctypes
+            import ctypes.wintypes
+
+            enum_current_settings = -1
+
+            class DEVMODEW(ctypes.Structure):
+                _fields_ = [
+                    ("_pad1", ctypes.c_byte * 68),
+                    ("dmSize", ctypes.c_uint16),
+                    ("_pad2", ctypes.c_byte * 114),
+                    ("dmDisplayFrequency", ctypes.c_uint32),
+                    ("_pad3", ctypes.c_byte * 32),
+                ]
+
+            dm = DEVMODEW()
+            dm.dmSize = ctypes.sizeof(DEVMODEW)
+            windll = getattr(ctypes, "windll", None)
+            if windll is None:
+                return None
+            if windll.user32.EnumDisplaySettingsW(None, enum_current_settings, ctypes.byref(dm)):
+                freq = dm.dmDisplayFrequency
+                if freq > 1:  # 0 and 1 are sentinel values meaning "default"
+                    return float(freq)
+        except Exception:
+            logger.debug("(non-fatal): Failed to get display refresh rate on Windows", exc_info=True)
+
+    elif system == "Linux":
+        try:
+            result = subprocess.run(["xrandr"], capture_output=True, text=True, timeout=5, check=False)
+            for line in result.stdout.splitlines():
+                if "*" not in line:
+                    continue
+                # Active mode line looks like:   1920x1080     60.00*+  50.00
+                for token in line.split():
+                    if "*" in token:
+                        return float(token.replace("*", "").replace("+", ""))
+        except Exception:
+            logger.debug("(non-fatal): Failed to get display refresh rate on Linux", exc_info=True)
+
+    return None
+
+
 def _fetch_machine_info() -> dict[str, Any]:
     cpu_info = cpuinfo.get_cpu_info()
     ret = {
@@ -219,6 +301,10 @@ def _fetch_machine_info() -> dict[str, Any]:
             ret["cpu_freq_max"] = cpu_freq.max
     except (SystemError, RuntimeError):
         logger.exception(" (non-fatal): psutil failed to retrieve CPU frequency")
+
+    refresh_rate = _get_display_refresh_rate()
+    if refresh_rate is not None:
+        ret["display_refresh_rate_hz"] = refresh_rate
 
     if platform.system() == "Darwin":  # macOS
         ret["os_macos_version"] = platform.mac_ver()
@@ -519,6 +605,8 @@ def entrypoint():
 
     if args.import_install:
         _copy_files_from_xemu_toml(args)
+        logger.info("Configuration files copied")
+        return 0
 
     mcpx_path = os.path.abspath(os.path.expanduser(args.mcpx))
     if not os.path.isfile(mcpx_path):
