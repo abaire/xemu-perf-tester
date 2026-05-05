@@ -176,24 +176,38 @@ def _parse_results_file(results_file: str) -> dict[str, Any]:
 
 def _fetch_machine_info() -> dict[str, Any]:
     cpu_info = cpuinfo.get_cpu_info()
-
     ret = {
         "cpu_manufacturer": cpu_info.get("brand_raw", "N/A"),
         "cpu_vendor_id": cpu_info.get("vendor_id_raw", "N/A"),
         "cpu_stepping": cpu_info.get("stepping", "N/A"),
         "cpu_model": cpu_info.get("model", "N/A"),
         "cpu_family": cpu_info.get("family", "N/A"),
-        "cpu_cores": psutil.cpu_count(logical=False),
-        "hw_threads": psutil.cpu_count(logical=True),
         "os_system": platform.system(),
         "os_release": platform.release(),
         "os_version": platform.version(),
         "os_machine_type": platform.machine(),
     }
 
-    cpu_freq = psutil.cpu_freq()
-    if cpu_freq:
-        ret["cpu_freq_max"] = cpu_freq.max
+    try:
+        cpu_cores = psutil.cpu_count(logical=False)
+        if cpu_cores:
+            ret["cpu_freq_max"] = cpu_cores
+    except (SystemError, RuntimeError):
+        logger.exception(" (non-fatal): psutil failed to retrieve CPU core count")
+
+    try:
+        num_threads = psutil.cpu_count(logical=False)
+        if num_threads:
+            ret["hw_threads"] = num_threads
+    except (SystemError, RuntimeError):
+        logger.exception(" (non-fatal): psutil failed to retrieve CPU HW thread count")
+
+    try:
+        cpu_freq = psutil.cpu_freq()
+        if cpu_freq:
+            ret["cpu_freq_max"] = cpu_freq.max
+    except (SystemError, RuntimeError):
+        logger.exception(" (non-fatal): psutil failed to retrieve CPU frequency")
 
     if platform.system() == "Darwin":  # macOS
         ret["os_macos_version"] = platform.mac_ver()
