@@ -89,14 +89,14 @@ jobs:
           hatch build
 
       - name: Upload sdist artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: matrix.python-version == needs.select-python-version-for-publishing.outputs.python-version
         with:
           name: source
           path: dist/*.tar.gz
 
       - name: Upload wheel artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: matrix.python-version == needs.select-python-version-for-publishing.outputs.python-version
         with:
           name: wheels
