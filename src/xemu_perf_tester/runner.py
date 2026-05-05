@@ -229,11 +229,15 @@ def _get_display_refresh_rate() -> float | None:
 
             class DEVMODEW(ctypes.Structure):
                 _fields_ = [
-                    ("_pad", ctypes.c_byte * 340),
+                    ("_pad1", ctypes.c_byte * 68),
+                    ("dmSize", ctypes.c_uint16),
+                    ("_pad2", ctypes.c_byte * 114),
                     ("dmDisplayFrequency", ctypes.c_uint32),
+                    ("_pad3", ctypes.c_byte * 32),
                 ]
 
             dm = DEVMODEW()
+            dm.dmSize = ctypes.sizeof(DEVMODEW)
             if ctypes.windll.user32.EnumDisplaySettingsW(None, enum_current_settings, ctypes.byref(dm)):
                 freq = dm.dmDisplayFrequency
                 if freq > 1:  # 0 and 1 are sentinel values meaning "default"
