@@ -485,6 +485,8 @@ def copy_xemu_inputs(toml_path: str, destination_directory: str):
     """Copies the various required input files from an existing xemu.toml manifest to the given directory."""
 
     toml_path = os.path.abspath(os.path.expanduser(toml_path))
+    if os.path.isdir(toml_path):
+        toml_path = os.path.join(toml_path, "xemu.toml")
     if not os.path.isfile(toml_path):
         msg = f"No xemu toml file found at '{toml_path}'"
         raise ValueError(msg)
