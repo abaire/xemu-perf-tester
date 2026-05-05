@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 
 # ruff: noqa: PLC0415 `import` should be at the top-level of a file
+# ruff: noqa: T201 `print` found
+# ruff: noqa: S105 Possible hardcoded password
+# ruff: noqa: PLR2004 Magic value used in comparison
 
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import json
 import logging
@@ -14,6 +18,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+import zlib
 from shutil import SameFileError
 from time import sleep
 from typing import TYPE_CHECKING, Any
@@ -21,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 import cpuinfo
 import machineid
 import psutil
+import requests
 from nxdk_pgraph_test_runner import Config
 from nxdk_pgraph_test_runner.emulator_output import EmulatorOutput
 from python_xiso_repacker import ensure_extract_xiso, extract_file
@@ -45,6 +52,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MODIFIED_TESTER_ISO = "updated_tester_iso.iso"
+
+_SUBMISSION_CLIENT_ID = "Ov23liIyQD02yI5OZZCV"
+_SUBMISSION_REPO = "abaire/xemu-perf-tester_results"
 
 
 def _download_tester_iso(output_dir: str, tag: str = "latest", github_api_token: str | None = None) -> str | None:
@@ -224,6 +234,73 @@ def _fetch_machine_info() -> dict[str, Any]:
     return ret
 
 
+def github_auth() -> Any:
+    code_resp = requests.post(
+        "https://github.com/login/device/code",
+        data={
+            "client_id": _SUBMISSION_CLIENT_ID,
+            "scope": "public_repo",
+        },
+        headers={"Accept": "application/json"},
+        timeout=10,
+    ).json()
+
+    print(f"\nTo submit results, please go to: {code_resp['verification_uri']}")
+    print(f"Enter the code: {code_resp['user_code']}\n")
+    print("Waiting for authorization...", end="", flush=True)
+
+    token_url = "https://github.com/login/oauth/access_token"
+    token_payload = {
+        "client_id": _SUBMISSION_CLIENT_ID,
+        "device_code": code_resp["device_code"],
+        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+    }
+
+    token = None
+    interval = code_resp.get("interval", 5)
+
+    while not token:
+        time.sleep(interval)
+        auth_resp = requests.post(
+            token_url, data=token_payload, headers={"Accept": "application/json"}, timeout=10
+        ).json()
+
+        if "access_token" in auth_resp:
+            token = auth_resp["access_token"]
+            print(" Authorized!")
+        elif auth_resp.get("error") not in ("authorization_pending", "slow_down"):
+            sys.exit(f"\nAuth failed: {auth_resp.get('error')}")
+
+    return token
+
+
+def submit_results(results: dict):
+    token = github_auth()
+
+    compact_json = json.dumps(results, separators=(",", ":"))
+    compressed = zlib.compress(compact_json.encode(), level=zlib.Z_BEST_COMPRESSION)
+    encoded_payload = base64.b64encode(compressed).decode()
+
+    results_xemu_version = results.get("xemu_version", "UNKNOWN")
+    issue_resp = requests.post(
+        f"https://api.github.com/repos/{_SUBMISSION_REPO}/issues",
+        json={
+            "title": f"Benchmark result for xemu {results_xemu_version}",
+            "body": f"```\n{encoded_payload}\n```",
+        },
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+        },
+        timeout=10,
+    )
+
+    if issue_resp.status_code == 201:
+        print("Successfully submitted benchmark results.")
+    else:
+        print(f"Failed to submit. Status: {issue_resp.status_code}\n{issue_resp.text}")
+
+
 def _process_results(
     output_directory: str,
     iso_path: str,
@@ -234,11 +311,9 @@ def _process_results(
     xemu_tag: str | None,
     *,
     use_vulkan: bool,
+    upload_results: bool = False,
 ):
-    os.makedirs(output_directory, exist_ok=True)
-
     renderer = "VK" if use_vulkan else "GL"
-    output_file = os.path.join(output_directory, f"{machine_token}-{renderer}.json")
 
     results = {
         "iso": os.path.basename(iso_path),
@@ -253,6 +328,12 @@ def _process_results(
     if xemu_tag:
         results["xemu_tag"] = xemu_tag
 
+    if upload_results:
+        submit_results(results)
+        return
+
+    os.makedirs(output_directory, exist_ok=True)
+    output_file = os.path.join(output_directory, f"{machine_token}-{renderer}.json")
     with open(output_file, "w") as outfile:
         json.dump(results, outfile, indent=2)
 
@@ -271,6 +352,7 @@ def run(
     *,
     no_bundle: bool = False,
     use_vulkan: bool = False,
+    upload_results: bool = False,
 ) -> int:
     emulator_command, portable_mode_config_path = build_emulator_command(xemu_path, no_bundle=no_bundle)
     if not emulator_command:
@@ -313,6 +395,7 @@ def run(
             emulator_output,
             use_vulkan=use_vulkan,
             xemu_tag=xemu_tag,
+            upload_results=upload_results,
         )
 
     return 0
@@ -402,6 +485,12 @@ def entrypoint():
         metavar="block_list_json_file",
         help="Specify a block_list.json file used to restrict the set of tests based on host machine information.",
     )
+    parser.add_argument(
+        "--upload-results",
+        "-U",
+        action="store_true",
+        help="Automatically uploads results to the results repository.",
+    )
 
     parser.add_argument("--github-token", help="Github API token, only required for PR/action artifact fetching.")
 
@@ -481,6 +570,7 @@ def entrypoint():
             just_suites=args.just_suites,
             block_list_file=block_list_file,
             xemu_tag=args.xemu_tag,
+            upload_results=args.upload_results,
         )
 
     if args.temp_path:
