@@ -30,6 +30,7 @@ import psutil
 import requests
 from nxdk_pgraph_test_runner import Config
 from nxdk_pgraph_test_runner.emulator_output import EmulatorOutput
+from platformdirs import user_config_path
 from python_xiso_repacker import ensure_extract_xiso, extract_file
 
 from xemu_perf_tester.util.blocklist import BlockList
@@ -274,15 +275,8 @@ def github_auth() -> Any:
     return token
 
 
-def submit_results(results: dict):
-    token = github_auth()
-
-    compact_json = json.dumps(results, separators=(",", ":"))
-    compressed = zlib.compress(compact_json.encode(), level=zlib.Z_BEST_COMPRESSION)
-    encoded_payload = base64.b64encode(compressed).decode()
-
-    results_xemu_version = results.get("xemu_version", "UNKNOWN")
-    issue_resp = requests.post(
+def _post_issue(token: str, results_xemu_version: str, encoded_payload: str) -> requests.Response:
+    return requests.post(
         f"https://api.github.com/repos/{_SUBMISSION_REPO}/issues",
         json={
             "title": f"Benchmark result for xemu {results_xemu_version}",
@@ -295,10 +289,30 @@ def submit_results(results: dict):
         timeout=10,
     )
 
-    if issue_resp.status_code == 201:
+
+def submit_results(results: dict):
+    compact_json = json.dumps(results, separators=(",", ":"))
+    compressed = zlib.compress(compact_json.encode(), level=zlib.Z_BEST_COMPRESSION)
+    encoded_payload = base64.b64encode(compressed).decode()
+
+    token_cache_file = user_config_path("xemu-perf-tester") / "github_token"
+    token = token_cache_file.read_text().strip() if token_cache_file.exists() else None
+    xemu_version = results.get("xemu_version", "UNKNOWN")
+    if token:
+        response = _post_issue(token, xemu_version, encoded_payload)
+        if response.status_code == 401:
+            token = None
+    if not token:
+        token = github_auth()
+        token_cache_file.parent.mkdir(parents=True, exist_ok=True)
+        token_cache_file.write_text(token)
+        token_cache_file.chmod(0o600)
+        response = _post_issue(token, xemu_version, encoded_payload)
+
+    if response.status_code == 201:
         print("Successfully submitted benchmark results.")
     else:
-        print(f"Failed to submit. Status: {issue_resp.status_code}\n{issue_resp.text}")
+        print(f"Failed to submit. Status: {response.status_code}\n{response.text}")
 
 
 def _process_results(
