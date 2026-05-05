@@ -323,6 +323,7 @@ def _process_results(
         "machine_info": _fetch_machine_info(),
         "renderer": renderer,
         "results": _parse_results_file(results_file),
+        "machine_token": machine_token,
     }
 
     if xemu_tag:
