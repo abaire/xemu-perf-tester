@@ -595,6 +595,8 @@ def entrypoint():
 
     if args.import_install:
         _copy_files_from_xemu_toml(args)
+        logger.info("Configuration files copied")
+        return 0
 
     mcpx_path = os.path.abspath(os.path.expanduser(args.mcpx))
     if not os.path.isfile(mcpx_path):
