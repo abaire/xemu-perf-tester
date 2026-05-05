@@ -202,7 +202,10 @@ def _get_display_refresh_rate() -> float | None:
             import ctypes
             import ctypes.util
 
-            cg = ctypes.cdll.LoadLibrary(ctypes.util.find_library("CoreGraphics"))
+            cg_lib = ctypes.util.find_library("CoreGraphics")
+            if cg_lib is None:
+                return None
+            cg = ctypes.cdll.LoadLibrary(cg_lib)
             cg.CGMainDisplayID.restype = ctypes.c_uint32
             cg.CGDisplayCopyDisplayMode.restype = ctypes.c_void_p
             cg.CGDisplayCopyDisplayMode.argtypes = [ctypes.c_uint32]
@@ -238,7 +241,10 @@ def _get_display_refresh_rate() -> float | None:
 
             dm = DEVMODEW()
             dm.dmSize = ctypes.sizeof(DEVMODEW)
-            if ctypes.windll.user32.EnumDisplaySettingsW(None, enum_current_settings, ctypes.byref(dm)):
+            windll = getattr(ctypes, "windll", None)
+            if windll is None:
+                return None
+            if windll.user32.EnumDisplaySettingsW(None, enum_current_settings, ctypes.byref(dm)):
                 freq = dm.dmDisplayFrequency
                 if freq > 1:  # 0 and 1 are sentinel values meaning "default"
                     return float(freq)
