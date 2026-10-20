@@ -72,3 +72,12 @@ def test_compare_release_pr():
 
     assert a.compare(b) == 0
     assert b.compare(a) == 0
+
+
+def test_ci_pr_version_without_branch():
+    sut = XemuVersion("xemu-0.8.138-9-g7850f6a9f4-7850f6a9f49c44e364ec2488491419e57dc4b6d6")
+
+    assert not sut.is_release
+    assert (sut.xemu_major, sut.xemu_minor, sut.xemu_patch) == (0, 8, 138)
+    assert sut.build == 9
+    assert sut.branch == ""
