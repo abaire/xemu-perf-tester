@@ -396,6 +396,36 @@ def _authenticate_and_cache_token() -> str:
     return token
 
 
+def get_gh_cli_token() -> str | None:
+    """Returns the token of the locally authenticated GitHub CLI (`gh`), if available."""
+    gh = shutil.which("gh")
+    if not gh:
+        return None
+    try:
+        result = subprocess.run([gh, "auth", "token"], capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        logger.debug("Failed to retrieve token from gh CLI", exc_info=True)
+        return None
+    if result.returncode != 0:
+        logger.debug("gh auth token failed: %s", result.stderr.strip())
+        return None
+    return result.stdout.strip() or None
+
+
+def get_artifact_download_token(explicit_token: str | None = None) -> str:
+    """Returns a token for downloading CI artifacts.
+
+    Prefers an explicitly provided token, then the GitHub CLI's token, then the result submission token.
+    """
+    if explicit_token:
+        return explicit_token
+    token = get_gh_cli_token()
+    if token:
+        logger.info("Using GitHub CLI credentials to download CI artifacts")
+        return token
+    return get_github_token(validate=True)
+
+
 def get_github_token(*, validate: bool = False) -> str:
     """Returns the cached GitHub token used for result submission, authenticating if necessary."""
     token_cache_file = _token_cache_file()
@@ -660,7 +690,8 @@ def entrypoint():
 
     parser.add_argument(
         "--github-token",
-        help="Github API token used for PR/action artifact fetching. Defaults to the token used to submit results.",
+        help="Github API token used for PR/action artifact fetching. Defaults to the token of the GitHub CLI (gh) "
+        "if it is installed and authenticated, otherwise the token used to submit results.",
     )
     parser.add_argument(
         "--ci-workflow",
@@ -711,7 +742,7 @@ def entrypoint():
             shutil.copy2(xemu, xemu_copy)
         xemu = xemu_copy
     elif is_ci_build_url(args.xemu_tag):
-        github_token = args.github_token or get_github_token(validate=True)
+        github_token = get_artifact_download_token(args.github_token)
         auth_header = {"Authorization": f"Bearer {github_token}"}
         try:
             ci_build = fetch_ci_build_info(args.xemu_tag, auth_header, workflow_name=args.ci_workflow)

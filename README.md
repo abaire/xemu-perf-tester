@@ -52,10 +52,14 @@ The tool exits with an error if there is no such run (e.g., the build is still
 in progress, failed, or its artifacts have expired); it never falls back to a
 release build.
 
-Downloading artifacts requires an authenticated GitHub token. By default the
-same token used to submit results is used (you will be prompted to authorize
-it in a browser the first time). You may pass a different token via
-`--github-token`.
+Downloading artifacts requires an authenticated GitHub token, chosen in this
+order:
+
+1. `--github-token`, if given.
+1. The [GitHub CLI](https://cli.github.com/)'s token (`gh auth token`), if `gh`
+   is installed and logged in.
+1. The same token used to submit results (you will be prompted to authorize it
+   in a browser the first time).
 
 Results produced from a PR or action build include a `dev_build` section
 (PR number, head SHA, workflow run, base xemu version) and are ingested
