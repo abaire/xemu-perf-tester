@@ -46,8 +46,20 @@ xemu-perf-run \
 - the URL of a pull request (PR) (e.g.,
   `https://github.com/xemu-project/xemu/pull/2329`).
 
-The action and PR options additionally require you to pass a GitHub token using
-the `--github-token` argument. See `--help` for details.
+For PRs and actions, the build artifact for your platform is taken from the
+newest successful run of the xemu `CI` workflow (override with `--ci-workflow`).
+The tool exits with an error if there is no such run (e.g., the build is still
+in progress, failed, or its artifacts have expired); it never falls back to a
+release build.
+
+Downloading artifacts requires an authenticated GitHub token. By default the
+same token used to submit results is used (you will be prompted to authorize
+it in a browser the first time). You may pass a different token via
+`--github-token`.
+
+Results produced from a PR or action build include a `dev_build` section
+(PR number, head SHA, workflow run, base xemu version) and are ingested
+separately from release results.
 
 ### Reusing existing xemu-perf-tests ISO and/or xemu binary
 

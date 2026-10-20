@@ -37,13 +37,22 @@ from platformdirs import user_config_path
 from python_xiso_repacker import ensure_extract_xiso, extract_file
 
 from xemu_perf_tester.util.blocklist import BlockList
-from xemu_perf_tester.util.github import download_artifact, fetch_github_release_info
+from xemu_perf_tester.util.github import (
+    CiBuildInfo,
+    CiBuildNotFoundError,
+    download_artifact,
+    fetch_ci_build_info,
+    fetch_github_release_info,
+    is_ci_build_url,
+)
 from xemu_perf_tester.util.hdd import retrieve_files, setup_xemu_hdd_image
 from xemu_perf_tester.util.perf_tester_config import XemuPerfTesterConfigManager
 from xemu_perf_tester.util.xemu import (
+    XemuVersion,
     build_emulator_command,
     copy_xemu_inputs,
     download_xemu,
+    download_xemu_ci_build,
     ensure_cache_path,
     ensure_path,
     ensure_results_path,
@@ -361,11 +370,56 @@ def github_auth() -> Any:
     return token
 
 
-def _post_issue(token: str, results_xemu_version: str, encoded_payload: str) -> requests.Response:
+def _token_cache_file():
+    return user_config_path("xemu-perf-tester") / "github_token"
+
+
+def _is_token_valid(token: str) -> bool:
+    try:
+        response = requests.get(
+            "https://api.github.com/user",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+            timeout=10,
+        )
+    except requests.exceptions.RequestException:
+        logger.exception("Failed to validate cached GitHub token")
+        return False
+    return response.status_code != 401
+
+
+def _authenticate_and_cache_token() -> str:
+    token = github_auth()
+    token_cache_file = _token_cache_file()
+    token_cache_file.parent.mkdir(parents=True, exist_ok=True)
+    token_cache_file.write_text(token)
+    token_cache_file.chmod(0o600)
+    return token
+
+
+def get_github_token(*, validate: bool = False) -> str:
+    """Returns the cached GitHub token used for result submission, authenticating if necessary."""
+    token_cache_file = _token_cache_file()
+    token = token_cache_file.read_text().strip() if token_cache_file.exists() else None
+    if token and (not validate or _is_token_valid(token)):
+        return token
+    return _authenticate_and_cache_token()
+
+
+def _build_issue_title(results: dict[str, Any]) -> str:
+    xemu_version = results.get("xemu_version", "UNKNOWN")
+    dev_build = results.get("dev_build")
+    if not dev_build:
+        return f"Benchmark result for xemu {xemu_version}"
+    if dev_build.get("pr_number"):
+        return f"Benchmark result for xemu PR #{dev_build['pr_number']} {xemu_version}"
+    return f"Benchmark result for xemu CI run {dev_build.get('run_id')} {xemu_version}"
+
+
+def _post_issue(token: str, title: str, encoded_payload: str) -> requests.Response:
     return requests.post(
         f"https://api.github.com/repos/{_SUBMISSION_REPO}/issues",
         json={
-            "title": f"Benchmark result for xemu {results_xemu_version}",
+            "title": title,
             "body": f"```\n{encoded_payload}\n```",
         },
         headers={
@@ -381,24 +435,28 @@ def submit_results(results: dict):
     compressed = zlib.compress(compact_json.encode(), level=zlib.Z_BEST_COMPRESSION)
     encoded_payload = base64.b64encode(compressed).decode()
 
-    token_cache_file = user_config_path("xemu-perf-tester") / "github_token"
-    token = token_cache_file.read_text().strip() if token_cache_file.exists() else None
-    xemu_version = results.get("xemu_version", "UNKNOWN")
-    if token:
-        response = _post_issue(token, xemu_version, encoded_payload)
-        if response.status_code == 401:
-            token = None
-    if not token:
-        token = github_auth()
-        token_cache_file.parent.mkdir(parents=True, exist_ok=True)
-        token_cache_file.write_text(token)
-        token_cache_file.chmod(0o600)
-        response = _post_issue(token, xemu_version, encoded_payload)
+    title = _build_issue_title(results)
+    token = get_github_token()
+    response = _post_issue(token, title, encoded_payload)
+    if response.status_code == 401:
+        token = _authenticate_and_cache_token()
+        response = _post_issue(token, title, encoded_payload)
 
     if response.status_code == 201:
         print("Successfully submitted benchmark results.")
     else:
         print(f"Failed to submit. Status: {response.status_code}\n{response.text}")
+
+
+def _build_dev_build_info(ci_build: CiBuildInfo, xemu_version: str) -> dict[str, Any]:
+    ret = ci_build.to_dict()
+    try:
+        version = XemuVersion(xemu_version)
+        ret["base_version"] = f"{version.xemu_major}.{version.xemu_minor}.{version.xemu_patch}"
+    except ValueError:
+        logger.warning("Failed to determine base version from '%s'", xemu_version)
+        ret["base_version"] = None
+    return ret
 
 
 def _process_results(
@@ -409,6 +467,7 @@ def _process_results(
     results_file: str,
     emulator_output: EmulatorOutput,
     xemu_tag: str | None,
+    ci_build: CiBuildInfo | None = None,
     *,
     use_vulkan: bool,
     upload_results: bool = False,
@@ -428,6 +487,9 @@ def _process_results(
 
     if xemu_tag:
         results["xemu_tag"] = xemu_tag
+
+    if ci_build:
+        results["dev_build"] = _build_dev_build_info(ci_build, emulator_output.emulator_version)
 
     if upload_results:
         submit_results(results)
@@ -450,6 +512,7 @@ def run(
     just_suites: Collection[str] | None = None,
     block_list_file: str | None = None,
     xemu_tag: str | None = None,
+    ci_build: CiBuildInfo | None = None,
     *,
     no_bundle: bool = False,
     use_vulkan: bool = False,
@@ -496,6 +559,7 @@ def run(
             emulator_output,
             use_vulkan=use_vulkan,
             xemu_tag=xemu_tag,
+            ci_build=ci_build,
             upload_results=upload_results,
         )
 
@@ -554,7 +618,8 @@ def entrypoint():
         "--xemu-tag",
         metavar="github_release_tag",
         default="latest",
-        help="Release tag to use when downloading xemu from GitHub.",
+        help="Release tag to use when downloading xemu from GitHub. May also be the URL of a xemu pull request or "
+        "GitHub Actions run, in which case the CI build artifact for this platform is used.",
     )
     parser.add_argument(
         "--bios",
@@ -593,7 +658,15 @@ def entrypoint():
         help="Automatically uploads results to the results repository.",
     )
 
-    parser.add_argument("--github-token", help="Github API token, only required for PR/action artifact fetching.")
+    parser.add_argument(
+        "--github-token",
+        help="Github API token used for PR/action artifact fetching. Defaults to the token used to submit results.",
+    )
+    parser.add_argument(
+        "--ci-workflow",
+        default="CI",
+        help="Name of the GitHub Actions workflow that produces xemu build artifacts for PR/action URLs.",
+    )
 
     args = parser.parse_args()
 
@@ -626,6 +699,7 @@ def entrypoint():
         logger.error("Invalid ISO path '%s'", iso)
         return 1
 
+    ci_build: CiBuildInfo | None = None
     if args.xemu:
         xemu = os.path.abspath(os.path.expanduser(args.xemu))
         dev_dir = os.path.join(cache_path, "dev_xemu")
@@ -636,8 +710,17 @@ def entrypoint():
         else:
             shutil.copy2(xemu, xemu_copy)
         xemu = xemu_copy
+    elif is_ci_build_url(args.xemu_tag):
+        github_token = args.github_token or get_github_token(validate=True)
+        auth_header = {"Authorization": f"Bearer {github_token}"}
+        try:
+            ci_build = fetch_ci_build_info(args.xemu_tag, auth_header, workflow_name=args.ci_workflow)
+            xemu = download_xemu_ci_build(cache_path, ci_build, auth_header)
+        except CiBuildNotFoundError as err:
+            logger.error("%s", err)  # noqa: TRY400 Use `logging.exception` instead of `logging.error`
+            return 1
     else:
-        xemu = download_xemu(cache_path, args.xemu_tag, args.github_token)
+        xemu = download_xemu(cache_path, args.xemu_tag)
 
     if not xemu:
         logger.error("Failed to download xemu")
@@ -673,6 +756,7 @@ def entrypoint():
             just_suites=args.just_suites,
             block_list_file=block_list_file,
             xemu_tag=args.xemu_tag,
+            ci_build=ci_build,
             upload_results=args.upload_results,
         )
 
