@@ -293,12 +293,12 @@ def _fetch_machine_info() -> dict[str, Any]:
     try:
         cpu_cores = psutil.cpu_count(logical=False)
         if cpu_cores:
-            ret["cpu_freq_max"] = cpu_cores
+            ret["cpu_cores"] = cpu_cores
     except (SystemError, RuntimeError):
         logger.exception(" (non-fatal): psutil failed to retrieve CPU core count")
 
     try:
-        num_threads = psutil.cpu_count(logical=False)
+        num_threads = psutil.cpu_count(logical=True)
         if num_threads:
             ret["hw_threads"] = num_threads
     except (SystemError, RuntimeError):
