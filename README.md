@@ -92,6 +92,107 @@ xemu-perf-run \
   --no-bundle
 ```
 
+### Pinned xemu settings
+
+Every run writes its own `xemu.toml`, so results don't depend on how xemu is
+set up on the host. Besides the BIOS, boot ROM and HDD paths, it sets:
+
+* `display.renderer`: OpenGL, or Vulkan with `--use-vulkan` / `--renderers VK`
+* `display.quality.surface_scale = 1`
+* `display.window`: windowed (`fullscreen_on_startup = false`),
+  `startup_size = '1280x960'`, and `vsync` on unless `--vsync off` is given
+* `display.ui`: `show_menubar = false`, `show_notifications = false`,
+  `fit = 'scale'`
+* `perf.cache_shaders = false`, so shaders are compiled the same way on every
+  launch
+
+### Sustained runs and the contention matrix
+
+`--run-mode sustained` makes the tester run each test for a stretch of 60 FPS
+frames instead of profiling a single frame (see the xemu-perf-tests README).
+Each test runs at the load calibrated on real hardware, which the ISO reads from
+its `calibration.json`.
+
+`--matrix contention` runs the `PfifoContention` suite in sustained mode with
+each renderer, with vsync both on and off, launching xemu fresh 3 times for
+each combination:
+
+```shell
+xemu-perf-run --matrix contention
+```
+
+Explicit flags override the preset:
+
+* `--renderers GL VK`: the renderers to run with.
+* `--vsync on off`: the vsync settings to run with.
+* `--repeat N`: the number of separate launches for each renderer and vsync
+  setting. Defaults to 3 in sustained mode and 1 in single mode.
+* `--just-suites`: the suites to run.
+* `--warmup-frames`, `--measure-frames`: override the number of frames per test,
+  for example for a quick check. `--measure-frames` must be at least 1.
+* `--timeout-seconds`: the longest a launch may run before it is killed.
+  Defaults to 1800 in sustained mode. A launch that is killed before the tests
+  finish is recorded as failed.
+
+A sustained run writes a single file,
+`results/<xemu version>/<machine>-sustained-<UTC time>.json`. It contains every
+launch's results under `cells`, with the xemu settings, xemu's GPU information
+and the host conditions (see below) of each launch, and the hardware
+measurements from the ISO's `calibration.json` under `hardware_baseline`. The
+file is rewritten after every launch, so a run that is stopped keeps the
+launches that finished.
+
+If xemu reports that it can't use the requested renderer (for example, a build
+without Vulkan support) and switches to another one, that launch is recorded as
+failed and the renderer's remaining launches are skipped.
+
+Only standard results can be uploaded: `--upload-results` is rejected in
+sustained mode, with `--vsync off`, with `--repeat` greater than 1, and with
+frame overrides.
+
+### Comparing results
+
+`xemu-perf-compare` reports a sustained results file against the hardware and,
+optionally, against the results of another xemu build:
+
+```shell
+xemu-perf-compare candidate.json baseline.json > report.md
+```
+
+For each renderer and vsync setting, and each test, it shows:
+
+* the number of repeats that produced results, the busy time p50 and p95, each
+  the median over those repeats, and the spread (max - min) of p95 across them;
+* `vs HW`: busy p95 divided by the hardware's busy p95. 1.00 or less means
+  xemu is at least as fast as the hardware;
+* with a baseline, the change in p95. A change is marked significant only when
+  it is larger than the spreads of both files combined, which needs at least 2
+  repeats in each;
+* missed vblanks, totalled over the repeats, and notes about fence timeouts,
+  aborted runs, loads that differ from the hardware's or the baseline's, and
+  tests that only one of the files has results for.
+
+Each renderer and vsync setting also notes how many launches failed, and the
+report warns when the files come from different machines or ISOs. Only
+sustained results files can be compared.
+
+`--format json` writes the same data as JSON, and `--output` writes to a file.
+
+### Reducing host noise
+
+Busy times are affected by anything else the host is doing. For results that
+can be compared:
+
+* close other applications, especially ones that use the GPU (browsers, video);
+* keep laptops on mains power and disable power saving modes;
+* on Linux, use the `performance` CPU governor;
+* keep the xemu window visible and unobstructed on the main display;
+* run baseline and candidate builds back to back on the same machine.
+
+The results record the load average, whether the machine is on mains power and
+(on Linux) the CPU governor, sampled before each launch, alongside the display
+refresh rate.
+
 ## Test configuration
 
 ### Conditional block listing
