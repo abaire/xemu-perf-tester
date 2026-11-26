@@ -411,6 +411,26 @@ def download_xemu(output_dir: str, tag: str = "latest") -> str | None:
     return _download_xemu_release(output_dir, tag)
 
 
+def pinned_host_settings(*, use_vulkan: bool, vsync: bool) -> dict[str, dict[str, Any]]:
+    """Returns the xemu.toml settings, by section, that are pinned so that results don't depend on the host's setup."""
+    return {
+        "display": {"renderer": "VULKAN" if use_vulkan else "OPENGL"},
+        "display.quality": {"surface_scale": 1},
+        "display.window": {"fullscreen_on_startup": False, "startup_size": "1280x960", "vsync": vsync},
+        "display.ui": {"show_menubar": False, "show_notifications": False, "fit": "scale"},
+        # Compile shaders on every launch so that repeated runs behave the same.
+        "perf": {"cache_shaders": False},
+    }
+
+
+def _toml_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    return f"'{value}'"
+
+
 def generate_xemu_toml(
     file_path: str,
     bootrom_path: str,
@@ -419,7 +439,9 @@ def generate_xemu_toml(
     hdd_path: str,
     *,
     use_vulkan: bool = False,
+    vsync: bool = True,
 ) -> None:
+    """Writes a xemu.toml that pins every host setting that affects benchmark results."""
     content = [
         "[general]",
         "show_welcome = false",
@@ -441,8 +463,9 @@ def generate_xemu_toml(
         f"hdd_path = '{hdd_path}'",
     ]
 
-    if use_vulkan:
-        content.extend(["", "[display]", "renderer = 'VULKAN'"])
+    for section, values in pinned_host_settings(use_vulkan=use_vulkan, vsync=vsync).items():
+        content.extend(["", f"[{section}]"])
+        content.extend(f"{key} = {_toml_value(value)}" for key, value in values.items())
 
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
     with open(file_path, "w") as outfile:

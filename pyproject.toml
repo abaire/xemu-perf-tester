@@ -46,6 +46,7 @@ Source = "https://github.com/abaire/xemu-perf-tester"
 
 [project.scripts]
 xemu-perf-run = "xemu_perf_tester:execute"
+xemu-perf-compare = "xemu_perf_tester.compare:execute"
 
 [tool.hatch.version]
 path = "src/xemu_perf_tester/__about__.py"

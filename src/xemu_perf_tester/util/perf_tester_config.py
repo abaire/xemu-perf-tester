@@ -35,8 +35,16 @@ class XemuPerfTesterConfigManager:
         self,
         output_path: str,
         tests_to_disable: list[str] | None = None,
+        run_mode: str = "single",
+        warmup_frames: int | None = None,
+        measure_frames: int | None = None,
+        suites_to_enable: Collection[str] | None = None,
     ) -> bool:
-        """Repacks the xemu_perf_tests iso with FTP enabled."""
+        """Repacks the xemu_perf_tests iso to run tests automatically in the given run mode and then shut down.
+
+        Runs every test, or only the tests in `suites_to_enable` when given, except for `tests_to_disable`.
+        `warmup_frames` and `measure_frames` override the ISO's settings for sustained runs when given.
+        """
         tester_config = self.extract_pgraph_tester_config()
         if not tester_config:
             tester_config = {"settings": {}}
@@ -55,17 +63,39 @@ class XemuPerfTesterConfigManager:
                     "reboot_or_shutdown_delay": 100,
                     "output_directory_path": self._runner_config.xbox_artifact_path,
                     "skip_tests_by_default": False,
+                    "run_mode": run_mode,
                 }
             },
         )
+        if warmup_frames is not None:
+            tester_config["settings"]["warmup_frames"] = warmup_frames
+        if measure_frames is not None:
+            tester_config["settings"]["measure_frames"] = measure_frames
 
         tester_config.pop("test_suites", None)
+        if suites_to_enable:
+            tester_config["settings"]["skip_tests_by_default"] = True
+            tester_config["test_suites"] = {suite: {"skipped": False} for suite in suites_to_enable}
         if tests_to_disable:
             skip_config = create_skip_config(tests_to_disable)
             logger.debug("Repacking with additional skipped tests %s", skip_config)
             mergedeep.merge(tester_config, skip_config)
 
         return self._repack_config(tester_config, output_path)
+
+    def extract_calibration(self) -> dict[str, Any] | None:
+        """Extracts the hardware calibration that the xemu_perf_tests ISO loads its test loads from, if it has one."""
+        extract_xiso = ensure_extract_xiso(None)
+        if not extract_xiso:
+            logger.error("extract-xiso is unavailable")
+            return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_file = os.path.join(tmpdir, "calibration.json")
+            if not extract_file(self.iso_path, "calibration.json", output_file, extract_xiso):
+                return None
+
+            return _parse_config_file(output_file)
 
     def extract_pgraph_tester_config(self) -> dict[str, Any] | None:
         """Extracts an existing JSON config from the xemu_perf_tests ISO."""
@@ -158,20 +188,14 @@ def create_skip_config(names_to_disable: Collection[str]) -> dict[str, Any]:
     """Creates a 'test_suites' object with the given tests skipped."""
 
     ret: dict[str, Any] = {}
-    skip_config = {"skipped": True}
 
     for fq_name in names_to_disable:
         elements = fq_name.split("::")
         if len(elements) > 1 and elements[1]:
             suite, test = elements
-
-            if suite not in ret:
-                ret[suite] = {}
-            ret[suite][test] = skip_config
+            ret.setdefault(suite, {})[test] = {"skipped": True}
         else:
-            suite = elements[0]
-            if suite not in ret:
-                ret[suite] = skip_config
+            ret.setdefault(elements[0], {})["skipped"] = True
 
     return {"test_suites": ret}
 

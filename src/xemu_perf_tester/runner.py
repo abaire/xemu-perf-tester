@@ -13,6 +13,8 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
+import datetime
+import itertools
 import json
 import logging
 import os
@@ -23,6 +25,7 @@ import sys
 import tempfile
 import time
 import zlib
+from dataclasses import dataclass
 from shutil import SameFileError
 from time import sleep
 from typing import TYPE_CHECKING, Any
@@ -57,10 +60,11 @@ from xemu_perf_tester.util.xemu import (
     ensure_path,
     ensure_results_path,
     generate_xemu_toml,
+    pinned_host_settings,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
+    from collections.abc import Callable, Collection
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +72,126 @@ _MODIFIED_TESTER_ISO = "updated_tester_iso.iso"
 
 _SUBMISSION_CLIENT_ID = "Ov23liIyQD02yI5OZZCV"
 _SUBMISSION_REPO = "abaire/xemu-perf-tester_results"
+
+_RUN_MODE_SINGLE = "single"
+_RUN_MODE_SUSTAINED = "sustained"
+_RENDERERS = ("GL", "VK")
+
+# Settings implied by each --matrix preset. Flags given explicitly take precedence.
+_MATRIX_PRESETS: dict[str, dict[str, Any]] = {
+    "contention": {
+        "run_mode": _RUN_MODE_SUSTAINED,
+        "just_suites": ["PfifoContention"],
+        "renderers": list(_RENDERERS),
+        "vsync": [True, False],
+    },
+}
+
+# Logged by xemu when the configured renderer isn't available in the build, before it switches to another one.
+_RENDERER_UNAVAILABLE_MESSAGE = "Configured renderer unavailable"
+
+_DEFAULT_REPEAT = {_RUN_MODE_SINGLE: 1, _RUN_MODE_SUSTAINED: 3}
+# Sustained runs get a shorter timeout than the test runner's default, so that one hung launch doesn't stall a matrix.
+_DEFAULT_SUSTAINED_TIMEOUT_SECONDS = 1800
+
+
+@dataclass(frozen=True)
+class RunSettings:
+    """How the benchmark is run: the mode, the host configurations to run it under and how often to repeat it."""
+
+    run_mode: str = _RUN_MODE_SINGLE
+    renderers: tuple[str, ...] = ("GL",)
+    vsync: tuple[bool, ...] = (True,)
+    repeat: int = 1
+    just_suites: tuple[str, ...] | None = None
+    warmup_frames: int | None = None
+    measure_frames: int | None = None
+    timeout_seconds: int | None = None
+
+    @property
+    def cells(self) -> list[tuple[str, bool]]:
+        """Returns every (renderer, vsync) host configuration to run."""
+        return list(itertools.product(self.renderers, self.vsync))
+
+
+def _parse_vsync(value: str) -> bool:
+    if value == "on":
+        return True
+    if value == "off":
+        return False
+    msg = f"Invalid vsync value '{value}', expected 'on' or 'off'"
+    raise ValueError(msg)
+
+
+def resolve_run_settings(args: argparse.Namespace) -> RunSettings:
+    """Combines the --matrix preset, if any, with the explicitly given flags.
+
+    Raises ValueError if the combination is invalid.
+    """
+    preset: dict[str, Any] = _MATRIX_PRESETS[args.matrix] if args.matrix else {}
+
+    run_mode = args.run_mode or preset.get("run_mode", _RUN_MODE_SINGLE)
+
+    if args.renderers:
+        renderers = [renderer.upper() for renderer in args.renderers]
+    elif args.use_vulkan:
+        renderers = ["VK"]
+    else:
+        renderers = preset.get("renderers", ["GL"])
+    for renderer in renderers:
+        if renderer not in _RENDERERS:
+            msg = f"Invalid renderer '{renderer}', expected one of {', '.join(_RENDERERS)}"
+            raise ValueError(msg)
+
+    vsync = [_parse_vsync(value) for value in args.vsync] if args.vsync else preset.get("vsync", [True])
+
+    repeat = args.repeat if args.repeat is not None else _DEFAULT_REPEAT[run_mode]
+    if repeat < 1:
+        msg = "--repeat must be at least 1"
+        raise ValueError(msg)
+
+    just_suites = args.just_suites or preset.get("just_suites")
+
+    timeout_seconds = args.timeout_seconds
+    if timeout_seconds is None and run_mode == _RUN_MODE_SUSTAINED:
+        timeout_seconds = _DEFAULT_SUSTAINED_TIMEOUT_SECONDS
+    if timeout_seconds is not None and timeout_seconds < 1:
+        msg = "--timeout-seconds must be at least 1"
+        raise ValueError(msg)
+
+    if args.warmup_frames is not None and args.warmup_frames < 0:
+        msg = "--warmup-frames must not be negative"
+        raise ValueError(msg)
+    if args.measure_frames is not None and args.measure_frames < 1:
+        msg = "--measure-frames must be at least 1"
+        raise ValueError(msg)
+
+    vsync = list(dict.fromkeys(vsync))
+    if args.upload_results:
+        # Uploaded results must be comparable with each other, so only the standard configuration may be uploaded.
+        if run_mode != _RUN_MODE_SINGLE:
+            msg = "--upload-results is only supported in single run mode"
+            raise ValueError(msg)
+        if vsync != [True]:
+            msg = "--upload-results is only supported with vsync on"
+            raise ValueError(msg)
+        if repeat != 1:
+            msg = "--upload-results is only supported with --repeat 1"
+            raise ValueError(msg)
+        if args.warmup_frames is not None or args.measure_frames is not None:
+            msg = "--upload-results is not supported with --warmup-frames or --measure-frames"
+            raise ValueError(msg)
+
+    return RunSettings(
+        run_mode=run_mode,
+        renderers=tuple(dict.fromkeys(renderers)),
+        vsync=tuple(vsync),
+        repeat=repeat,
+        just_suites=tuple(just_suites) if just_suites else None,
+        warmup_frames=args.warmup_frames,
+        measure_frames=args.measure_frames,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def _download_tester_iso(output_dir: str, tag: str = "latest", github_api_token: str | None = None) -> str | None:
@@ -132,29 +256,33 @@ def _determine_xemu_info(results_path: str, emulator_command: str) -> tuple[str,
     ), emulator_output.emulator_version
 
 
-def _configure_iso(config: Config, block_list: BlockList) -> str | None:
+def _configure_iso(config: Config, block_list: BlockList, settings: RunSettings) -> str | None:
+    """Repacks the tester ISO with the runner's settings and returns its path."""
     manager = XemuPerfTesterConfigManager(config)
     iso_path = os.path.join(config.ensure_data_dir(), _MODIFIED_TESTER_ISO)
-    if not manager.repack_iso_fresh(iso_path, tests_to_disable=block_list.disallowed_tests):
+    if not manager.repack_iso_fresh(
+        iso_path,
+        tests_to_disable=block_list.disallowed_tests,
+        run_mode=settings.run_mode,
+        warmup_frames=settings.warmup_frames,
+        measure_frames=settings.measure_frames,
+        suites_to_enable=settings.just_suites,
+    ):
+        logger.error("FATAL: Failed to repack tester ISO")
         return None
 
     return iso_path
 
 
-def _execute_and_collect_output(config: Config, block_list: BlockList) -> EmulatorOutput | None:
-    repacked_iso = _configure_iso(config, block_list)
-    if not repacked_iso:
-        logger.error("FATAL: Failed to repack tester ISO")
-        return 1
+def _execute_and_collect_output(config: Config, repacked_iso: str) -> tuple[EmulatorOutput | None, bool]:
+    """Runs xemu until it exits or times out.
 
+    Returns the parsed emulator output, or None if xemu could not be run, and whether xemu was killed for timing out.
+    """
     emulator_command = config.build_emulator_command(repacked_iso)
-    manager = XemuPerfTesterConfigManager(config, repacked_iso)
-
-    if config.suite_allowlist and not manager.repack_with_only_test_suites(set(config.suite_allowlist)):
-        logger.error("FATAL: Failed to repack with allowlist suites %s", config.suite_allowlist)
-        return None
 
     stderr = ""
+    timed_out = False
     try:
         result = subprocess.run(
             emulator_command,
@@ -167,8 +295,10 @@ def _execute_and_collect_output(config: Config, block_list: BlockList) -> Emulat
         stderr = result.stderr
     except FileNotFoundError:
         logger.exception("Failed to execute emulator")
-        return None
+        return None, False
     except subprocess.TimeoutExpired as err:
+        logger.error("xemu was killed after running for %d seconds", config.timeout_seconds)  # noqa: TRY400 Use `logging.exception` instead of `logging.error`
+        timed_out = True
         if err.stderr is not None:
             # Windows Python 3.13 returns a string rather than bytes.
             stderr = err.stderr.decode() if isinstance(err.stderr, bytes) else err.stderr
@@ -179,10 +309,10 @@ def _execute_and_collect_output(config: Config, block_list: BlockList) -> Emulat
         logger.exception(err)  # noqa: TRY401 Redundant exception object included in `logging.exception` call
         raise
 
-    return EmulatorOutput.parse(stdout=[], stderr=stderr.split("\n"))
+    return EmulatorOutput.parse(stdout=[], stderr=stderr.split("\n")), timed_out
 
 
-def _parse_results_file(results_file: str) -> dict[str, Any]:
+def _parse_results_file(results_file: str) -> list[Any]:
     with open(results_file) as infile:
         json_lines: list[str] = []
         for line in infile:
@@ -191,6 +321,13 @@ def _parse_results_file(results_file: str) -> dict[str, Any]:
 
             if line == "]\n":
                 break
+
+    if len(json_lines) < 3:
+        msg = f"No test results found in '{results_file}'"
+        raise ValueError(msg)
+    if json_lines[-1] != "]\n":
+        msg = f"Test results in '{results_file}' are incomplete; xemu probably exited before the tests finished"
+        raise ValueError(msg)
 
     # Remove the trailing comma from the last test result.
     json_lines[-2] = json_lines[-2].rstrip()[:-1]
@@ -274,6 +411,33 @@ def _get_display_refresh_rate() -> float | None:
             logger.debug("(non-fatal): Failed to get display refresh rate on Linux", exc_info=True)
 
     return None
+
+
+def _fetch_host_noise_info() -> dict[str, Any]:
+    """Returns information about host conditions that can add noise to benchmark results."""
+    ret: dict[str, Any] = {}
+
+    try:
+        ret["load_average"] = list(psutil.getloadavg())
+    except (OSError, AttributeError):
+        logger.debug("(non-fatal): Failed to retrieve load average", exc_info=True)
+
+    try:
+        battery = psutil.sensors_battery() if hasattr(psutil, "sensors_battery") else None
+        if battery is not None:
+            ret["power_plugged"] = battery.power_plugged
+    except (OSError, RuntimeError):
+        logger.debug("(non-fatal): Failed to retrieve power source", exc_info=True)
+
+    governor_path = "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
+    if os.path.isfile(governor_path):
+        try:
+            with open(governor_path) as infile:
+                ret["cpu_governor"] = infile.read().strip()
+        except OSError:
+            logger.debug("(non-fatal): Failed to read CPU governor", exc_info=True)
+
+    return ret
 
 
 def _fetch_machine_info() -> dict[str, Any]:
@@ -489,46 +653,83 @@ def _build_dev_build_info(ci_build: CiBuildInfo, xemu_version: str) -> dict[str,
     return ret
 
 
-def _process_results(
-    output_directory: str,
+def _build_common_metadata(
     iso_path: str,
     machine_token: str,
     just_suites: Collection[str] | None,
-    results_file: str,
-    emulator_output: EmulatorOutput,
+    xemu_version: str,
     xemu_tag: str | None,
-    ci_build: CiBuildInfo | None = None,
-    *,
-    use_vulkan: bool,
-    upload_results: bool = False,
-):
-    renderer = "VK" if use_vulkan else "GL"
-
-    results = {
+    ci_build: CiBuildInfo | None,
+) -> dict[str, Any]:
+    """Returns the metadata that is the same for every launch in a run."""
+    ret: dict[str, Any] = {
         "iso": os.path.basename(iso_path),
-        "suite_allowlist": just_suites,
-        "xemu_version": emulator_output.emulator_version,
-        "xemu_machine_info": emulator_output.machine_info + "\n" + emulator_output.failure_info,
+        "suite_allowlist": list(just_suites) if just_suites else None,
+        "xemu_version": xemu_version,
         "machine_info": _fetch_machine_info(),
-        "renderer": renderer,
-        "results": _parse_results_file(results_file),
         "machine_token": machine_token,
     }
 
     if xemu_tag:
-        results["xemu_tag"] = xemu_tag
+        ret["xemu_tag"] = xemu_tag
 
     if ci_build:
-        results["dev_build"] = _build_dev_build_info(ci_build, emulator_output.emulator_version)
+        ret["dev_build"] = _build_dev_build_info(ci_build, xemu_version)
+
+    return ret
+
+
+def _process_results(
+    output_directory: str,
+    output_file_suffix: str,
+    metadata: dict[str, Any],
+    test_results: list[Any],
+    *,
+    renderer: str,
+    vsync: bool,
+    upload_results: bool = False,
+):
+    """Writes or uploads the results of a single-mode launch."""
+    results = dict(metadata)
+    results["renderer"] = renderer
+    if not vsync:
+        results["vsync"] = False
+    results["results"] = test_results
 
     if upload_results:
         submit_results(results)
         return
 
     os.makedirs(output_directory, exist_ok=True)
-    output_file = os.path.join(output_directory, f"{machine_token}-{renderer}.json")
+    output_file = os.path.join(output_directory, f"{metadata['machine_token']}-{renderer}{output_file_suffix}.json")
     with open(output_file, "w") as outfile:
         json.dump(results, outfile, indent=2)
+
+
+def build_hardware_baseline(calibration: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Returns the hardware measurements from a calibration.json, keyed by fully qualified test name."""
+    if not calibration:
+        return None
+
+    tests: dict[str, Any] = {}
+    for result in calibration.get("results", []):
+        name = result.get("name")
+        if not name:
+            continue
+        tests[name] = {
+            key: result[key] for key in ("status", "load", "busy_p50_us", "busy_p95_us", "max_resets") if key in result
+        }
+
+    return {
+        "hardware": calibration.get("hardware"),
+        "calibration": calibration.get("calibration"),
+        "tests": tests,
+    }
+
+
+def _sustained_output_file(output_directory: str, machine_token: str) -> str:
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return os.path.join(output_directory, f"{machine_token}-sustained-{timestamp}.json")
 
 
 def run(
@@ -537,30 +738,42 @@ def run(
     inputs_path: str,
     results_path: str,
     xemu_path: str,
+    reset_hdd: Callable[[str], None],
     hdd_path: str,
     machine_token: str,
-    just_suites: Collection[str] | None = None,
+    settings: RunSettings,
     block_list_file: str | None = None,
     xemu_tag: str | None = None,
     ci_build: CiBuildInfo | None = None,
     *,
     no_bundle: bool = False,
-    use_vulkan: bool = False,
     upload_results: bool = False,
 ) -> int:
+    """Runs the benchmark once per repeat of every host configuration in `settings`, each in a fresh xemu launch.
+
+    `reset_hdd` is called with `hdd_path` before every launch to recreate the hard drive image.
+    """
+    # On Windows the first call starts sampling and returns zeros, so it's called here, well before the first launch.
+    with contextlib.suppress(OSError, AttributeError):
+        psutil.getloadavg()
+
     emulator_command, portable_mode_config_path = build_emulator_command(xemu_path, no_bundle=no_bundle)
     if not emulator_command:
         return 1
 
-    generate_xemu_toml(
-        portable_mode_config_path,
-        bootrom_path=os.path.join(inputs_path, "mcpx.bin"),
-        flashrom_path=os.path.join(inputs_path, "bios.bin"),
-        eeprom_path=os.path.join(inputs_path, "eeprom.bin"),
-        hdd_path=hdd_path,
-        use_vulkan=use_vulkan,
-    )
+    def write_xemu_toml(renderer: str, *, vsync: bool) -> None:
+        generate_xemu_toml(
+            portable_mode_config_path,
+            bootrom_path=os.path.join(inputs_path, "mcpx.bin"),
+            flashrom_path=os.path.join(inputs_path, "bios.bin"),
+            eeprom_path=os.path.join(inputs_path, "eeprom.bin"),
+            hdd_path=hdd_path,
+            use_vulkan=renderer == "VK",
+            vsync=vsync,
+        )
 
+    first_renderer, first_vsync = settings.cells[0]
+    write_xemu_toml(first_renderer, vsync=first_vsync)
     output_directory, xemu_version = _determine_xemu_info(results_path, emulator_command=emulator_command)
 
     config = Config(
@@ -569,29 +782,142 @@ def run(
         emulator_command=emulator_command,
         iso_path=iso_path,
         xbox_artifact_path=r"c:\xemu-perf-tests",
-        suite_allowlist=just_suites,
+        suite_allowlist=list(settings.just_suites) if settings.just_suites else None,
+        # The test runner treats 0 as its own default timeout.
+        timeout_seconds=settings.timeout_seconds or 0,
     )
 
     block_list = BlockList(xemu_version, block_list_file=block_list_file)
-    emulator_output = _execute_and_collect_output(config, block_list)
-    if not emulator_output:
+    repacked_iso = _configure_iso(config, block_list, settings)
+    if not repacked_iso:
+        return 1
+
+    sustained = settings.run_mode == _RUN_MODE_SUSTAINED
+    metadata = _build_common_metadata(iso_path, machine_token, settings.just_suites, xemu_version, xemu_tag, ci_build)
+    cells: list[dict[str, Any]] = []
+    succeeded = 0
+    failures = 0
+
+    hardware_baseline: dict[str, Any] | None = None
+    sustained_output_file = ""
+    if sustained:
+        hardware_baseline = build_hardware_baseline(XemuPerfTesterConfigManager(config).extract_calibration())
+        if not hardware_baseline:
+            logger.warning("The tester ISO has no calibration.json, so results can't be compared to hardware")
+        sustained_output_file = _sustained_output_file(output_directory, machine_token)
+
+    def write_sustained_results() -> None:
+        """Writes every launch so far, so that the results survive if a later launch hangs or the run is stopped."""
+        results = dict(metadata)
+        results["run_mode"] = settings.run_mode
+        results["repeat"] = settings.repeat
+        results["hardware_baseline"] = hardware_baseline
+        results["cells"] = cells
+
+        os.makedirs(output_directory, exist_ok=True)
+        # Written to a temporary file first so that stopping the run mid-write doesn't lose the earlier launches.
+        temp_file = f"{sustained_output_file}.tmp"
+        with open(temp_file, "w") as outfile:
+            json.dump(results, outfile, indent=2)
+        os.replace(temp_file, sustained_output_file)
+
+    unavailable_renderers: set[str] = set()
+    for renderer, vsync in settings.cells:
+        for repeat in range(settings.repeat):
+            if renderer in unavailable_renderers:
+                logger.error(
+                    "Skipping %s, vsync %s, repeat %d: xemu can't use it",
+                    renderer,
+                    "on" if vsync else "off",
+                    repeat + 1,
+                )
+                failures += 1
+                if sustained:
+                    cells.append(
+                        {
+                            "renderer": renderer,
+                            "vsync": vsync,
+                            "repeat": repeat,
+                            "error": f"Skipped: xemu can't use the {renderer} renderer",
+                            "results": [],
+                        }
+                    )
+                    write_sustained_results()
+                continue
+            logger.info(
+                "Running %s, vsync %s, repeat %d of %d", renderer, "on" if vsync else "off", repeat + 1, settings.repeat
+            )
+            write_xemu_toml(renderer, vsync=vsync)
+            reset_hdd(hdd_path)
+
+            cell: dict[str, Any] = {
+                "renderer": renderer,
+                "vsync": vsync,
+                "repeat": repeat,
+                "host_settings": pinned_host_settings(use_vulkan=renderer == "VK", vsync=vsync),
+                # Sampled before the launch, so that it measures the host rather than xemu.
+                "host_noise": _fetch_host_noise_info(),
+            }
+            emulator_output, timed_out = _execute_and_collect_output(config, repacked_iso)
+            if timed_out:
+                cell["timed_out"] = True
+            test_results: list[Any] | None = None
+            if emulator_output:
+                cell["xemu_machine_info"] = emulator_output.machine_info
+                if emulator_output.failure_info:
+                    cell["failure_info"] = emulator_output.failure_info
+                if _RENDERER_UNAVAILABLE_MESSAGE in emulator_output.failure_info:
+                    # xemu ran with a different renderer, so the results don't belong to this one.
+                    logger.error("xemu can't use the %s renderer in this build", renderer)
+                    unavailable_renderers.add(renderer)
+                    cell["error"] = f"xemu can't use the {renderer} renderer and switched to another"
+                    emulator_output = None
+            if emulator_output:
+                try:
+                    with tempfile.TemporaryDirectory() as temp_path:
+                        retrieve_files(hdd_path, temp_path, "c", "xemu-perf-tests/results.txt")
+                        test_results = _parse_results_file(os.path.join(temp_path, "xemu-perf-tests", "results.txt"))
+                except Exception as err:
+                    logger.exception("Failed to retrieve results")
+                    cell["error"] = str(err)
+            elif "error" not in cell:
+                cell["error"] = "Failed to execute emulator"
+
+            if test_results is None:
+                failures += 1
+            else:
+                succeeded += 1
+
+            if sustained:
+                cell["results"] = test_results or []
+                cells.append(cell)
+                write_sustained_results()
+            elif emulator_output and test_results is not None:
+                launch_metadata = dict(metadata)
+                launch_metadata["machine_info"] = {**metadata["machine_info"], **cell["host_noise"]}
+                launch_metadata["xemu_machine_info"] = (
+                    emulator_output.machine_info + "\n" + emulator_output.failure_info
+                )
+                suffix = ("" if vsync else "-novsync") + (f"-r{repeat}" if settings.repeat > 1 else "")
+                _process_results(
+                    output_directory,
+                    suffix,
+                    launch_metadata,
+                    test_results,
+                    renderer=renderer,
+                    vsync=vsync,
+                    upload_results=upload_results,
+                )
+
+    if sustained:
+        if not succeeded:
+            logger.error("No launch succeeded")
+            return 201
+        logger.info("Wrote %s", sustained_output_file)
+
+    if failures:
+        logger.error("%d of %d launches failed", failures, len(settings.cells) * settings.repeat)
         return 201
-
-    with tempfile.TemporaryDirectory() as temp_path:
-        retrieve_files(hdd_path, temp_path, "c", "xemu-perf-tests/results.txt")
-
-        _process_results(
-            output_directory,
-            iso_path,
-            machine_token,
-            just_suites,
-            os.path.join(temp_path, "xemu-perf-tests", "results.txt"),
-            emulator_output,
-            use_vulkan=use_vulkan,
-            xemu_tag=xemu_tag,
-            ci_build=ci_build,
-            upload_results=upload_results,
-        )
 
     return 0
 
@@ -623,7 +949,7 @@ def _setup_minimal_hdd(hdd: str, iso: str):
         setup_xemu_hdd_image(hdd, fake_dashboard)
 
 
-def entrypoint():
+def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--import-install",
@@ -677,6 +1003,49 @@ def entrypoint():
     parser.add_argument("--use-vulkan", action="store_true", help="Use the Vulkan renderer instead of OpenGL.")
     parser.add_argument("--just-suites", nargs="+", help="Just run the given suites rather than the full test set.")
     parser.add_argument(
+        "--run-mode",
+        choices=[_RUN_MODE_SINGLE, _RUN_MODE_SUSTAINED],
+        help="How the tester runs each test: a single profiled frame, or a sustained run of 60 FPS frames. "
+        f"Defaults to {_RUN_MODE_SINGLE}.",
+    )
+    parser.add_argument(
+        "--matrix",
+        choices=sorted(_MATRIX_PRESETS),
+        help="Runs a preset benchmark matrix. 'contention' runs the PfifoContention suite in sustained mode with "
+        "each renderer, with vsync both on and off. Flags given explicitly override the preset.",
+    )
+    parser.add_argument(
+        "--renderers",
+        nargs="+",
+        metavar="{GL,VK}",
+        help="Renderers to run with, each in its own launches. Overrides --use-vulkan.",
+    )
+    parser.add_argument(
+        "--vsync",
+        nargs="+",
+        choices=["on", "off"],
+        help="xemu vsync settings to run with, each in its own launches. Defaults to on.",
+    )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        help="Number of separate xemu launches for each renderer and vsync setting. "
+        f"Defaults to {_DEFAULT_REPEAT[_RUN_MODE_SINGLE]} in single mode and "
+        f"{_DEFAULT_REPEAT[_RUN_MODE_SUSTAINED]} in sustained mode.",
+    )
+    parser.add_argument(
+        "--warmup-frames", type=int, help="Overrides the number of unrecorded frames before each sustained test."
+    )
+    parser.add_argument(
+        "--measure-frames", type=int, help="Overrides the number of recorded frames in each sustained test."
+    )
+    parser.add_argument(
+        "--timeout-seconds",
+        type=int,
+        help="Maximum time each xemu launch may run before it is killed. Defaults to "
+        f"{_DEFAULT_SUSTAINED_TIMEOUT_SECONDS} in sustained mode.",
+    )
+    parser.add_argument(
         "--block-list-file",
         metavar="block_list_json_file",
         help="Specify a block_list.json file used to restrict the set of tests based on host machine information.",
@@ -699,10 +1068,20 @@ def entrypoint():
         help="Name of the GitHub Actions workflow that produces xemu build artifacts for PR/action URLs.",
     )
 
+    return parser
+
+
+def entrypoint():
+    parser = build_arg_parser()
     args = parser.parse_args()
 
     log_level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(level=log_level)
+
+    try:
+        settings = resolve_run_settings(args)
+    except ValueError as err:
+        parser.error(str(err))
 
     cache_path = ensure_cache_path(args.cache_path)
     results_path = ensure_results_path(args.results_path)
@@ -780,11 +1159,11 @@ def entrypoint():
             inputs_path=inputs_path,
             results_path=results_path,
             xemu_path=xemu,
+            reset_hdd=lambda hdd_path: _setup_minimal_hdd(hdd_path, iso),
             hdd_path=hdd,
             machine_token=machine_token,
+            settings=settings,
             no_bundle=args.no_bundle,
-            use_vulkan=args.use_vulkan,
-            just_suites=args.just_suites,
             block_list_file=block_list_file,
             xemu_tag=args.xemu_tag,
             ci_build=ci_build,
