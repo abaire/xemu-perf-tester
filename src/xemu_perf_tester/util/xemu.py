@@ -5,6 +5,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import shutil
 import sys
 import tarfile
@@ -504,7 +505,14 @@ def build_emulator_command(xemu_path: str, *, no_bundle: bool = False) -> tuple[
         msg = f"Platform {system} not supported."
         raise NotImplementedError(msg)
 
-    return xemu_path + " -dvd_path {ISO}", os.path.join(portable_mode_config_path, "xemu.toml")
+    config_path = os.path.join(portable_mode_config_path, "xemu.toml")
+    return f"{xemu_path} -config_path {_quote_command_arg(config_path)} -dvd_path {{ISO}}", config_path
+
+
+def _quote_command_arg(arg: str) -> str:
+    if platform.system() == "Windows":
+        return f'"{arg}"' if " " in arg else arg
+    return shlex.quote(arg)
 
 
 def ensure_path(path: str) -> str:

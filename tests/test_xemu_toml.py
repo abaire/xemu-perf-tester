@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import sys
 
 import pytest
@@ -9,6 +10,7 @@ if sys.version_info >= (3, 11):
 else:
     import tomli as tomllib
 
+from xemu_perf_tester.util import xemu
 from xemu_perf_tester.util.xemu import generate_xemu_toml
 
 
@@ -46,3 +48,19 @@ def test_keeps_system_files(tmp_path):
     assert config["sys"]["mem_limit"] == "64"
     assert config["sys"]["files"]["hdd_path"] == "/cache/hdd.img"
     assert config["general"]["show_welcome"] is False
+
+
+def test_emulator_command_passes_its_config_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(xemu.platform, "system", lambda: "Linux")
+    xemu_path = str(tmp_path / "xemu-dir" / "xemu")
+
+    command, config_path = xemu.build_emulator_command(xemu_path)
+
+    assert config_path == str(tmp_path / "xemu-dir" / "xemu.toml")
+    assert shlex.split(command.replace("{ISO}", "test.iso")) == [
+        xemu_path,
+        "-config_path",
+        config_path,
+        "-dvd_path",
+        "test.iso",
+    ]
